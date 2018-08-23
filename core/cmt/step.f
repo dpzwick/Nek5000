@@ -29,29 +29,34 @@ C> @file step.f time stepping and mesh spacing routines
       real strof
       data strof /1.0e-8/
 
-      dt_dum = abs(param(12))
-
       NTOT   = lx1*ly1*lz1*NELV
       do i=1,ntot
          utmp(i,1,1,1) = abs(vx(i,1,1,1))+csound(i,1,1,1)
          vtmp(i,1,1,1) = abs(vy(i,1,1,1))+csound(i,1,1,1)
          wtmp(i,1,1,1) = abs(vz(i,1,1,1))+csound(i,1,1,1)
       enddo
-      call compute_cfl (umax,utmp,vtmp,wtmp,dt_dum)
-      dt_cfl=ctarg/umax*dt_dum
-      call glsqinvcolmin(dt1,vdiff(1,1,1,1,imu ),gridh,ntot,ctarg)
-      call glsqinvcolmin(dt2,vdiff(1,1,1,1,iknd),gridh,ntot,ctarg)
-      call glsqinvcolmin(dt3,vdiff(1,1,1,1,inus),gridh,ntot,ctarg)
-      dt_dum = min(dt_dum,dt_cfl,dt1,dt2,dt3)
-c     dt_dum = min(dt_dum,dt_cfl)
-      if (dt_dum .gt. 10.0) then
-         if (nio.eq.0) write(6,*) 'dt huge. crashing ',istep,stage,
-     >      dt_dum
-         call exitt
+      if (ctarg .gt.0.0) then
+         call compute_cfl (umax,utmp,vtmp,wtmp,1.0)
+         dt_cfl=ctarg/umax
+         call glsqinvcolmin(dt1,vdiff(1,1,1,1,imu ),gridh,ntot,ctarg)
+         call glsqinvcolmin(dt2,vdiff(1,1,1,1,iknd),gridh,ntot,ctarg)
+         call glsqinvcolmin(dt3,vdiff(1,1,1,1,inus),gridh,ntot,ctarg)
+         dt_cmt=min(dt_cfl,dt1,dt2,dt3)
+         if (dt_cmt .gt. 10.0) then
+            if (nio.eq.0) write(6,*) 'dt huge. crashing ',istep,stage,
+     >         dt_cmt
+            call exitt
+         endif
+      else
+         dt_cmt=dt
       endif
 
+      ! particle cfl
 #ifdef LPM
-      call lpm_set_dt(dt_dum) ! particle time step
+       if (nid.eq.0 ) write(6,*) 'yoooo', dt_cmt,dt,ctarg,courno
+      rdt_part = dt_cmt ! set large, so compute correct here
+      call lpm_set_dt(rdt_part)
+      dt_cmt = min(dt_cmt,rdt_part)
 #endif
         
       if (timeio .gt. 0.0) then ! adjust dt for timeio. 
@@ -70,10 +75,8 @@ c     dt_dum = min(dt_dum,dt_cfl)
             dt_cmt=(it2*timeio)-time_cmt
          endif
       endif
-      call compute_cfl (courno,utmp,vtmp,wtmp,dt_dum) ! sanity?
-      param(12) = -dt_dum
-      dt_cmt    = dt_dum
-      dt        = -dt_dum
+      call compute_cfl (courno,utmp,vtmp,wtmp,dt_cmt) ! sanity?
+      dt=dt_cmt
 
 ! diffusion number based on viscosity.
 
@@ -82,13 +85,11 @@ c     dt_dum = min(dt_dum,dt_cfl)
       call glinvcol2max(diffno2,vdiff(1,1,1,1,iknd),gridh,ntot,dt_cmt)
       call glinvcol2max(diffno3,vdiff(1,1,1,1,inus),gridh,ntot,dt_cmt)
 !     diffno=max(diffno1,diffno2,diffno3)
-      time_cmt= time_cmt+dt_cmt
-      time    = time_cmt
+      time_cmt=time_cmt+dt_cmt
       if (nio.eq.0) WRITE(6,100)ISTEP,TIME_CMT,DT_CMT,COURNO,
      >   diffno1,diffno2,diffno3
  100  FORMAT('CMT ',I7,', t=',1pE14.7,', DT=',1pE14.7
      $,', C=',1pE12.5,', Dmu,knd,art=',3(1pE11.4))
-
 
       return
       end

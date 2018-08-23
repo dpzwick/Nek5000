@@ -861,7 +861,7 @@ c set particle options
       do i = 1,min(ifnd,15)
          call finiparser_getToken(initc(i),i)
          read(initc(i),*) d_out
-         binb(i) = d_out
+c        binb(i) = d_out
       enddo
 
       call finiparser_getDbl(d_out,'particle:diameter',ifnd)
