@@ -10,7 +10,6 @@ c----------------------------------------------------------------------
       nstage_part = 3
       if (abs(time_integ) .eq. 2) nstage_part = 1
 
-
       if (istep.eq.0) then
          call lpm_init(0)
       else
@@ -37,28 +36,34 @@ c----------------------------------------------------------------------
       include 'CTIMER'
       include 'LPM'
 
+c     common /elementload/ gfirst, inoassignd, resetFindpts, pload(lelg)
+c     integer gfirst, inoassignd, resetFindpts, pload
+
       icmtp = idum
 
-      ! for 2d cases
-      zlpart   = 0.0
-      zrpart   = dp(1)
-
       call set_part_pointers
+c     call read_particle_input_par ! for lb code since no par file
       call set_bounds_box
       call set_part_params 
       call place_particles
-      call move_particles_inproc
-
+      call update_particle_location   
+      call set_check_spl_params 
+      call move_particles_inproc          
       if (two_way.gt.1) then
+         call compute_neighbor_el_proc    
          call create_extra_particles
          call send_ghost_particles
          call spread_props_grid           
       endif
-      call init_interpolation
       call interp_props_part_location 
 
       if (time_integ .lt. 0) call pre_sim_collisions ! e.g., settling p
    
+c     resetFindpts = 0
+c     call computeRatio
+c     call reinitialize
+c     call printVerify
+
       return
       end
 c----------------------------------------------------------------------
@@ -88,9 +93,6 @@ c        correct nwe if discrepancy on rank 0
          nw_tmp      = iglsum(nwe,1)
          ndef        = nw - nw_tmp
          if (nid .lt. ndef) nwe = nwe + 1
-         
-c        nwe = 0
-c        if (nid .eq. 0) nwe = nw
 
 c        main loop to distribute particles
          do i_pt_part = 1,nwe
@@ -224,63 +226,17 @@ c           set global particle id (3 part tag)
             ipart(jpid1,n) = nid 
             ipart(jpid2,n) = i_pt_part
             ipart(jpid3,n) = icalld
-
-c           do k=1,n-1
-c              rlen = rpart(jrpe,n) + rpart(jrpe,k)
-c              rdist = (rpart(jx,n) - rpart(jx,k))**2 +
-c    >                 (rpart(jy,n) - rpart(jy,k))**2
-c              if (if3d) rdist = rdist + (rpart(jz,n) - rpart(jz,k))**2
-c              rdist = sqrt(rdist)
-c              if (rdist .lt. rlen) goto 754
-c           enddo
-
-
          enddo
 
       else
          ! read in data
          nread_part = 1
          do j=1,nread_part
-            if (nid .eq. 0) write(6,*) 'Begin reading particle restart'
             call read_parallel_restart_part
-            if (nid .eq. 0) write(6,*) 'End reading particle restart'
          enddo
-         if (nid .eq. 0) write(6,*) 'Begin transfer particles'
-         call move_particles_inproc
-         if (nid .eq. 0) write(6,*) 'End transfer particles'
-
-c        ! dupilcate higher in bed
-c        rlow  = 0.003
-c        rhigh = 0.008
-c        ndup  = 19
-c        do j = 1,ndup
-c           nsave = n
-c           do i=1,nsave
-c              if (rpart(jy,i) + rpart(jrpe,i).le. rhigh) then
-c              if (rpart(jy,i) - rpart(jrpe,i).ge. rlow ) then
-c                 n = n + 1
-c                 call copy(rpart(1,n),rpart(1,i),nr)
-c                 call icopy(ipart(1,n),ipart(1,i),ni)
-c              
-c                 rpart(jy,n) = rpart(jy,n) + (rhigh - rlow)*j
-c                 ipart(jpid3,n) = j+1
-c              
-c              endif
-c              endif
-c           enddo
-c           call move_particles_inproc
-c        enddo
-
-         ! cut top of bed
-c        rhigh = 0.008
-c        rhigh = 0.095
-c        do i=1,n
-c           rmax = rpart(jy,i) + rpart(jrpe,i)
-c           if (rmax .gt. rhigh) ipart(jrc,i) = 2
-c        enddo
-c        call move_particles_inproc
 
       endif
+
 
       ! force 2d z to be 1
       if (.not. if3d) then
@@ -304,14 +260,14 @@ c
       include 'TOTAL'
       include 'LPM'
 
+c     common /elementload/ gfirst, inoassignd, resetFindpts, pload(lelg)
+c     integer gfirst, inoassignd, resetFindpts, pload
+
+
       if(istep.eq.0.or.istep.eq.1)then
+c     if((istep.eq.0) .or. (istep.eq.1).or.(resetFindpts.eq.1)) then 
         call domain_size(xdrange(1,1),xdrange(2,1),xdrange(1,2)
      $                  ,xdrange(2,2),xdrange(1,3),xdrange(2,3))
-
-       if (.not. if3d) then
-          xdrange(1,3) = zlpart
-          xdrange(2,3) = zrpart
-       endif
       endif
 
       return
@@ -337,21 +293,27 @@ c     setup items
       nlxyze = nx1*ny1*nz1*nelt
       call rzero(rpart,lr*llpart)
       call izero(ipart,li*llpart)
-      call rzero(ptw,nlxyze*7)
+      call rzero(ptw,nlxyze*8)
       call rzero(ptdum,iptlen)
       call rzero(pttime,iptlen)
 
+      rtmp = 0.0 ! dummy number, max value it can be
+
       ! do nothing, no spreading
       if (npro_method .eq. 0) then
-         d2chk(1) = 0.0
+
       ! gaussian set by user input parameters
       elseif (npro_method .eq. 1) then
-         rsig = dfilt/(2.*sqrt(2.*log(2.))) ! gaussian filter std. * DP
-         d2chk(1) = dfilt/2.*sqrt(-log(ralphdecay)/log(2.))
+
+         rtmp = dfilt/2.*sqrt(-log(ralphdecay)/log(2.))
+
       endif
 
+      d2chk(1) = rtmp
       d2chk(2) = d2chk(1)
       d2chk(3) = d2chk(1)
+
+      rsig     = dfilt/(2.*sqrt(2.*log(2.))) ! gaussian filter std. * DP
 
       mu_0   = abs(param(2))
 
@@ -372,7 +334,7 @@ c----------------------------------------------------------------------
       rdeff_max = glmax(rdeff_max,1)
       rdeff_max = rdeff_max*2. ! to get diameter
 
-      rtmp_col = rdeff_max*1.5
+      rtmp_col = rdeff_max*1.50
 
       d2chk(1)  = d2chk(1)*rdeff_max
       d2chk(2)  = d2chk(2)*rdeff_max
@@ -397,51 +359,55 @@ c----------------------------------------------------------------------
       integer icalld
       save    icalld
       data    icalld  /-1/
+      
+      if (llpart .eq. 1) goto 1234
 
-      if (istep .gt. 1 .or. time_integ .lt. 0) then
-         icalld = icalld + 1
-c        if (icalld .le. 20) then
-            rdpe_max = 0.
-            rdpe_min = 100.
-            do i=1,n
-               if (rpart(jrpe,i).lt.rdpe_min) rdpe_min = rpart(jrpe,i)
-               if (rpart(jrpe,i).gt.rdpe_max) rdpe_max = rpart(jrpe,i)
-            enddo
-            rdpe_min = glmin(rdpe_min,1)
-            rdpe_max = glmax(rdpe_max,1)
-            rdpe_min = 2.*rdpe_min ! to get diameter
-            rdpe_max = 2.*rdpe_max ! to get diameter
-c        endif
-
-c       ! particle cfl, particles cant move due to velocity
-        dt_dum = rdt_part
-        dt_part = 1000.
-        cflp = 0.10
-        do i=1,n
-           rvmag  = sqrt(rpart(jv0,i)**2 + rpart(jv0+1,i)**2 
-     >                   + rpart(jv0+2,i)**2)
-        
-           cflt = dt_dum*rvmag/rdpe_min
-           if (cflt .lt. cflp) dt_part = dt_dum
-           if (cflt .ge. cflp) dt_part = cflp*rdpe_min/rvmag ! make sure smallest small overlap
-        enddo
-        dt_part  = glmin(dt_part,1)
-        rdt_part = min(dt_dum,dt_part)
-        if (dt_part .le. 1E-14) rdt_part = dt_dum
-
-   
-         if (two_way .gt. 2) then
-            ! resolving collisions
-            rm1      = rho_p*pi/6.*rdpe_min**3 ! max
-            rm2      = rho_p*pi/6.*rdpe_max**3 ! max
-            rm12     = 1./(1./rm1 + 1./rm2)
-            n_resolve= 10
-            dt_col   = sqrt(rm12/ksp*(log(e_rest)**2+pi**2))/n_resolve
-            rdt_part = min(rdt_part,dt_col)
-         endif
+      icalld = icalld + 1
+      if (icalld .eq. 0) then
+         rdpe_max = 0.
+         rdpe_min = 100.
+         do i=1,n
+            if (rpart(jrpe,i).lt.rdpe_min) rdpe_min = rpart(jrpe,i)
+            if (rpart(jrpe,i).gt.rdpe_max) rdpe_max = rpart(jrpe,i)
+         enddo
+         rdpe_min = glmin(rdpe_min,1)
+         rdpe_max = glmax(rdpe_max,1)
+         rdpe_min = 2.*rdpe_min ! to get diameter
+         rdpe_max = 2.*rdpe_max ! to get diameter
       endif
 
-      
+c     ! particle cfl, particles cant move due to velocity
+      dt_dum = rdt_part
+      dt_part = 1000.
+      cflp = 0.10
+      rvmag_max = 0.
+      do i=1,n
+         rvmag  = sqrt(rpart(jv0,i)**2 + rpart(jv0+1,i)**2 
+     >                 + rpart(jv0+2,i)**2)
+
+         cflt = dt_dum*rvmag/rdpe_min
+         if (cflt .lt. cflp) dt_part = dt_dum
+         if (cflt .ge. cflp) dt_part = cflp*rdpe_min/rvmag ! make sure smallest small overlap
+
+         if (rvmag .gt. rvmag_max) rvmag_max = rvmag
+      enddo
+      rvmag_max = glmax(rvmag_max,1)
+      dt_part  = glmin(dt_part,1)
+
+      ! resolving collisions
+      rm1      = rho_p*pi/6.*rdpe_min**3 ! max
+      rm2      = rho_p*pi/6.*rdpe_max**3 ! max
+      rm12     = 1./(1./rm1 + 1./rm2)
+      n_resolve= 10
+      dt_col   = sqrt(rm12/ksp*(log(e_rest)**2+pi**2))/n_resolve
+
+      if (two_way .gt. 2) then
+         rdt_part = min(dt_part,dt_col)
+      else
+         rdt_part = dt_part ! don't set if no collisions!
+      endif
+
+ 1234 continue
 
       return
       end
@@ -469,8 +435,7 @@ c     ipart pointers ------------------------------------------------
       jicx  = 8 ! initial time step introduced
       jicy  = 9 ! initial time step introduced
       jicz  = 10 ! initial time step introduced
-      jicn  = 11 ! initial time step introduced
-      jai   = 12 ! Pointer to auxiliary integers
+      jai   = 11 ! Pointer to auxiliary integers
 
       nai = ni - (jai-1)  ! Number of auxiliary integers
       if (nai.le.0) call exitti('Error in nai:$',ni)
@@ -555,9 +520,6 @@ c     ghost particle integer pointers -------------------------------
       jgpicx  = 5
       jgpicy  = 6
       jgpicz  = 7
-      jgppid1 = 8 
-      jgppid2 = 9
-      jgppid3 = 10
 
 c     ghost particle real pointers ----------------------------------
       jgpx    = 1 ! ghost particle xloc
@@ -598,15 +560,26 @@ c
          pttime(1) = pttime(1) + dnekclock() - ptdum(1)
       endif
 
+      icalld = icalld + 1
+
+c     should we inject particles at this time step?
+      ifinject = .false.
+      if (inject_rate .gt. 0) then
+      if ((mod(istep,inject_rate).eq.0)) then 
+         ifinject = .true. 
+      endif
+      endif
+
       if (istep .gt. time_delay) then
 
       if (stage.eq.1) then
-
-         icalld = icalld + 1
+         ! Update coordinates if particle moves outside boundary
+         ptdum(2) = dnekclock()
+            call update_particle_location  
+         pttime(2) = pttime(2) + dnekclock() - ptdum(2)
 
          ! Inject particles if needed
-         if (modulo(icalld,inject_rate) .eq. 0)
-     >      call place_particles
+         if (ifinject) call place_particles
 
          ! Update where particle is stored at
          ptdum(3) = dnekclock()
@@ -617,6 +590,7 @@ c
             ! Create ghost/wall particles
             ptdum(4) = dnekclock()
                call create_extra_particles
+               call sort_local_particles_collisions
             pttime(4) = pttime(4) + dnekclock() - ptdum(4)
 
             ! Send ghost particles
@@ -629,13 +603,6 @@ c
                call spread_props_grid
             pttime(6) = pttime(6) + dnekclock() - ptdum(6)
    
-            ptdum(4) = dnekclock()
-            call create_ghost_particles_col
-            pttime(4) = pttime(4) + dnekclock() - ptdum(4)
-
-            ptdum(5) = dnekclock()
-            call send_ghost_particles
-            pttime(5) = pttime(5) + dnekclock() - ptdum(5)
          endif
       endif
 
@@ -682,36 +649,22 @@ c
       real               phig(lx1,ly1,lz1,lelt)
       common /otherpvar/ phig
 
-      common /myparth/ i_fp_hndl, i_cr_hndl
-
       real    xx,yy,zz,vol,pfx,pfy,pfz,pmass,pmassf,vcell,multfc,multfci
      >       ,qgqf,rvx,rvy,rvz,rcountv(8,nelt),rx2(3)
      >       ,rxyzp(n_walls*2,3)
       integer e
 
-      common /lpm_fix/ phigdum,phigvdum
-      real phigdum(lx1,ly1,lz1,lelt,3),phigvdum(lx1,ly1,lz1,lelt)
+      nlxyze = lx1*ly1*lz1*lelt
+      nxyze  = nx1*ny1*nz1*nelt
+      call rzero(ptw,nlxyze*8)
 
-      real xrun(lx1),yrun(ly1),zrun(lz1)
+      ! do nothing
+      if (npro_method .eq. 0) then
 
-      integer xrune(lx1),yrune(lz1),zrune(lz1)
+      ! gaussian spreading
+      elseif (abs(npro_method) .eq. 1) then
 
-
-      integer el_save(2,lbmax),nsave
-
-      real rproj(11,llpart_gp+llpart)
-      integer iproj(4,llpart_gp+llpart)
-
-      logical partl
-
-
-      nxyz = lx1*ly1*lz1
-
-      nxyzdum = nxyz*nfldpm*neltb
-      call rzero(ptwb,nxyzdum)
-
-      d2chk2_sq = d2chk(2)**2
-
+      ! real particle projection
       do ip=1,n
          rsigp   = rsig*rpart(jrpe,ip)*2.
          multfci = 1./(sqrt(2.*pi)**2 * rsigp**2) ! exponential
@@ -720,36 +673,82 @@ c
      >           rpart(jrpe,ip)*2.
          ralph2   = ralph**2
          rbexpi   = 1./(-2.*rsigp**2)
-
          multfc = multfci
-         if (.not. if3d) 
-     >          multfc = multfc/(xdrange(2,3)-xdrange(1,3))
+         if (.not. if3d) multfc = multfc/(2.*rpart(jrpe,ip))
 
-         rproj(1 ,ip) = rbexpi
-                    
-         rproj(2 ,ip) = rpart(jx,ip)
-         rproj(3 ,ip) = rpart(jy,ip)
-         rproj(4 ,ip) = rpart(jz,ip)
-         rproj(5 ,ip) = -rpart(jf0,ip)*multfc
-         rproj(6 ,ip) = -rpart(jf0+1,ip)*multfc
-         rproj(7 ,ip) = -rpart(jf0+2,ip)*multfc
-         rproj(8 ,ip) = rpart(jvol,ip)*multfc
-c        rproj(9 ,ip) = -(rpart(jg0,ip) + rpart(jq0,ip))*multfc
-         rproj(9 ,ip) = rpart(jv0  ,ip)*rproj(8,ip)
-         rproj(10,ip) = rpart(jv0+1,ip)*rproj(8,ip)
-         rproj(11,ip) = rpart(jv0+2,ip)*rproj(8,ip)
+         pfx = -rpart(jf0,ip)*multfc
+         pfy = -rpart(jf0+1,ip)*multfc
+         pfz = -rpart(jf0+2,ip)*multfc
+         vol = rpart(jvol,ip)*multfc
+         qgqf= -(rpart(jg0,ip) + rpart(jq0,ip))*multfc
+         rvx = rpart(jv0  ,ip)*vol
+         rvy = rpart(jv0+1,ip)*vol
+         rvz = rpart(jv0+2,ip)*vol
 
-         ii = ipart(jicx,ip)
-         jj = ipart(jicy,ip)
-         kk = ipart(jicz,ip)
-         nn = ipart(jicn,ip)
-         iproj(1,ip)  = ii
-         iproj(2,ip)  = jj
-         iproj(3,ip)  = kk
-         iproj(4,ip)  = nn
+         ii    = floor((rpart(jx,ip)-xdrange(1,1))/rdxgp) 
+         jj    = floor((rpart(jy,ip)-xdrange(1,2))/rdygp) 
+         kk    = floor((rpart(jz,ip)-xdrange(1,3))/rdzgp) 
+
+
+         ! adding wall effects
+         rx2(1) = rpart(jx,ip)
+         rx2(2) = rpart(jy,ip)
+         rx2(3) = rpart(jz,ip)
+         call extra_wall_particle_exp(rxyzp,rx2,ic)
+
+      do ie=1,nelt
+      do k=1,nz1
+      do j=1,ny1
+      do i=1,nx1
+
+      if (     mod_gp_grid(i,j,k,ie,1).ge.ii-1
+     >   .and. mod_gp_grid(i,j,k,ie,1).le.ii+1) then
+      if (     mod_gp_grid(i,j,k,ie,2).ge.jj-1
+     >   .and. mod_gp_grid(i,j,k,ie,2).le.jj+1) then
+      if (     mod_gp_grid(i,j,k,ie,3).ge.kk-1
+     >   .and. mod_gp_grid(i,j,k,ie,3).le.kk+1) then
+
+         rdist2  = (xm1(i,j,k,ie) - rpart(jx,ip))**2 +
+     >           (ym1(i,j,k,ie) - rpart(jy,ip))**2 
+         if (if3d) rdist2 = rdist2 + (zm1(i,j,k,ie) - rpart(jz,ip))**2 
+
+
+         rexp = exp(rdist2*rbexpi)
+
+         ! add wall effects
+         do jjj=1,ic
+            rx22 = (xm1(i,j,k,ie) - rxyzp(jjj,1))**2
+            ry22 = (ym1(i,j,k,ie) - rxyzp(jjj,2))**2
+            rtmp2 = rx22 + ry22
+            if (if3d) then
+               rz22 = (zm1(i,j,k,ie) - rxyzp(jjj,3))**2
+               rtmp2 = rtmp2 + rz22
+            endif
+            rexp = rexp + exp(rtmp2*rbexpi)
+         enddo
+
+         ptw(i,j,k,ie,1) = ptw(i,j,k,ie,1) + pfx*rexp
+         ptw(i,j,k,ie,2) = ptw(i,j,k,ie,2) + pfy*rexp
+         ptw(i,j,k,ie,3) = ptw(i,j,k,ie,3) + pfz*rexp
+         ptw(i,j,k,ie,4) = ptw(i,j,k,ie,4) + vol*rexp
+         ptw(i,j,k,ie,5) = ptw(i,j,k,ie,5) + qgqf*rexp
+         ptw(i,j,k,ie,6) = ptw(i,j,k,ie,6) + rvx*rexp
+         ptw(i,j,k,ie,7) = ptw(i,j,k,ie,7) + rvy*rexp
+         ptw(i,j,k,ie,8) = ptw(i,j,k,ie,8) + rvz*rexp
+
+      endif
+      endif
+      endif
+
+      enddo
+      enddo
+      enddo
+      enddo
       enddo
 
+      ! ghost particle projection
       do ip=1,nfptsgp
+
          rsigp   = rsig*rptsgp(jgprpe,ip)*2.
          multfci = 1./(sqrt(2.*pi)**2 * rsigp**2) ! exponential
          if (if3d) multfci = multfci**(1.5d+0)
@@ -757,213 +756,88 @@ c        rproj(9 ,ip) = -(rpart(jg0,ip) + rpart(jq0,ip))*multfc
      >           rptsgp(jgprpe,ip)*2.
          ralph2   = ralph**2
          rbexpi   = 1./(-2.*rsigp**2)
-
          multfc = multfci
-         if (.not. if3d) 
-     >          multfc = multfc/(xdrange(2,3)-xdrange(1,3))
+         if (.not. if3d) multfc = multfc/(2.*rptsgp(jgprpe,ip))
 
-         rproj(1 ,ip+n) = rbexpi
-         rproj(2 ,ip+n) = rptsgp(jgpx,ip)
-         rproj(3 ,ip+n) = rptsgp(jgpy,ip)
-         rproj(4 ,ip+n) = rptsgp(jgpz,ip)
-         rproj(5 ,ip+n) = -rptsgp(jgpfh,ip)*multfc
-         rproj(6 ,ip+n) = -rptsgp(jgpfh+1,ip)*multfc
-         rproj(7 ,ip+n) = -rptsgp(jgpfh+2,ip)*multfc
-         rproj(8 ,ip+n) = rptsgp(jgpvol,ip)*multfc
-c        rproj(9 ,ip+n) = -(rptsgp(jgpg0,ip) + rptsgp(jgpq0,ip))*multfc
-         rproj(9 ,ip+n) = rptsgp(jgpv0  ,ip)*rproj(8,ip+n)
-         rproj(10,ip+n) = rptsgp(jgpv0+1,ip)*rproj(8,ip+n)
-         rproj(11,ip+n) = rptsgp(jgpv0+2,ip)*rproj(8,ip+n)
+         pfx = -rptsgp(jgpfh,ip)*multfc
+         pfy = -rptsgp(jgpfh+1,ip)*multfc
+         pfz = -rptsgp(jgpfh+2,ip)*multfc
+         vol = rptsgp(jgpvol,ip)*multfc
+         qgqf= -(rptsgp(jgpg0,ip) + rptsgp(jgpq0,ip))*multfc
+         rvx = rptsgp(jgpv0  ,ip)*vol
+         rvy = rptsgp(jgpv0+1,ip)*vol
+         rvz = rptsgp(jgpv0+2,ip)*vol
 
-         ii    = iptsgp(jgpicx,ip)
-         jj    = iptsgp(jgpicy,ip)
-         kk    = iptsgp(jgpicz,ip)
-         iproj(1,ip+n)  = ii
-         iproj(2,ip+n)  = jj
-         iproj(3,ip+n)  = kk
-         iproj(4,ip+n)  = ii + ndxgp*jj + ndxgp*ndygp*kk
-      enddo
+         ii    = floor((rptsgp(jgpx,ip)-xdrange(1,1))/rdxgp) 
+         jj    = floor((rptsgp(jgpy,ip)-xdrange(1,2))/rdygp) 
+         kk    = floor((rptsgp(jgpz,ip)-xdrange(1,3))/rdzgp) 
 
-      ndum = n+nfptsgp
+         ! adding wall effects
+         rx2(1) = rptsgp(jgpx,ip)
+         rx2(2) = rptsgp(jgpy,ip)
+         rx2(3) = rptsgp(jgpz,ip)
+         call extra_wall_particle_exp(rxyzp,rx2,ic)
 
-      if (ifrectp .eq. 1) then
-         do ip=1,ndum
-            ii    = iproj(1,ip)
-            jj    = iproj(2,ip)
-            kk    = iproj(3,ip)
-            ndum  = iproj(4,ip)
-          
-            ilow  = ii-1
-            ihigh = ii+1
-            jlow  = jj-1
-            jhigh = jj+1
-            klow  = kk-1
-            khigh = kk+1
-         
-            d2chk2_e = exp(d2chk_sq*rproj(1,ip))
-          
-            do ie=1,neltb
-         
-               if (lpm_el_map(1,ie) .gt. ndum) cycle
-               if (lpm_el_map(2,ie) .lt. ndum) cycle 
-         
-               if (lpm_el_map(3,ie) .gt. ihigh) cycle
-               if (lpm_el_map(4,ie) .lt. ilow)  cycle
-               if (lpm_el_map(5,ie) .gt. jhigh) cycle
-               if (lpm_el_map(6,ie) .lt. jlow)  cycle
-               if (lpm_el_map(7,ie) .gt. khigh) cycle
-               if (lpm_el_map(8,ie) .lt. klow)  cycle
-         
-               do i=1,nx1
-                  xrun(i) = (xm1b(i,1,1,1,ie) - rproj(2,ip))**2
-                  xrune(i) = 1
-                  if (xrun(i) .gt. d2chk2_sq) xrune(i) = -1
-               enddo
-               do j=1,ny1
-                  yrun(j) = (xm1b(1,j,1,2,ie) - rproj(3,ip))**2
-                  yrune(j) = 1
-                  if (yrun(j) .gt. d2chk2_sq) yrune(j) = -1
-               enddo
-               do k=1,nz1
-                  zrun(k) = (xm1b(1,1,k,3,ie) - rproj(4,ip))**2
-                  if (.not. if3d) zrun(k) = 0.0
-                  zrune(k) = 1
-                  if (zrun(k) .gt. d2chk2_sq) zrune(k) = -1
-               enddo
-         
-               do k=1,nz1
-                  if (zrune(k) .lt. 0) cycle
-               do j=1,ny1
-                  if (yrune(j) .lt. 0) cycle
-                  rdum1 = yrun(j) + zrun(k)
-               do i=1,nx1
-               if (mod_gp_grid(i,j,k,ie,4).ne.iproj(4,ip)) cycle
-               rdist2 = rdum1 + xrun(i)
-                  rexp = exp(rdist2*rproj(1,ip))
-                  
-                  do jj=1,7
-                     j1 = jj+4
-                     ptwb(i,j,k,jj,ie) = ptwb(i,j,k,jj,ie) 
-     >                                    + rproj(j1,ip)*rexp
-                  enddo
-               enddo
-               enddo
-               enddo
-            enddo
+      do ie=1,nelt
+      do k=1,nz1
+      do j=1,ny1
+      do i=1,nx1
+
+      if (     mod_gp_grid(i,j,k,ie,1).ge.ii-1
+     >   .and. mod_gp_grid(i,j,k,ie,1).le.ii+1) then
+      if (     mod_gp_grid(i,j,k,ie,2).ge.jj-1
+     >   .and. mod_gp_grid(i,j,k,ie,2).le.jj+1) then
+      if (     mod_gp_grid(i,j,k,ie,3).ge.kk-1
+     >   .and. mod_gp_grid(i,j,k,ie,3).le.kk+1) then
+
+         rdist2  = (xm1(i,j,k,ie) - rptsgp(jgpx,ip))**2 +
+     >           (ym1(i,j,k,ie) - rptsgp(jgpy,ip))**2 
+         if (if3d) rdist2 = rdist2 + (zm1(i,j,k,ie)-rptsgp(jgpz,ip))**2 
+
+         rexp = exp(rdist2*rbexpi)
+
+         ! add wall effects
+         do jjj=1,ic
+            rx22 = (xm1(i,j,k,ie) - rxyzp(jjj,1))**2
+            ry22 = (ym1(i,j,k,ie) - rxyzp(jjj,2))**2
+            rtmp2 = rx22 + ry22
+            if (if3d) then
+               rz22 = (zm1(i,j,k,ie) - rxyzp(jjj,3))**2
+               rtmp2 = rtmp2 + rz22
+            endif
+            rexp = rexp + exp(rtmp2*rbexpi)
          enddo
-      elseif (ifrectp .eq. 0) then
-         do ip=1,ndum
-            ii    = iproj(1,ip)
-            jj    = iproj(2,ip)
-            kk    = iproj(3,ip)
-            ndum  = iproj(4,ip)
-          
-            ilow  = ii-1
-            ihigh = ii+1
-            jlow  = jj-1
-            jhigh = jj+1
-            klow  = kk-1
-            khigh = kk+1
-         
-            d2chk2_e = exp(d2chk_sq*rproj(1,ip))
-          
-            do ie=1,neltb
-         
-               if (lpm_el_map(1,ie) .gt. ndum) cycle 
-               if (lpm_el_map(2,ie) .lt. ndum) cycle 
-         
-               if (lpm_el_map(3,ie) .gt. ihigh) cycle
-               if (lpm_el_map(4,ie) .lt. ilow)  cycle
-               if (lpm_el_map(5,ie) .gt. jhigh) cycle
-               if (lpm_el_map(6,ie) .lt. jlow)  cycle
-               if (lpm_el_map(7,ie) .gt. khigh) cycle
-               if (lpm_el_map(8,ie) .lt. klow)  cycle
-         
-               do i=1,nxyz
-                  if (mod_gp_grid(i,1,1,ie,4).ne.iproj(4,ip)) cycle
-                  rdist2  = (xm1b(i,1,1,1,ie) - rproj(2,ip))**2 +
-     >                      (xm1b(i,1,1,2,ie) - rproj(3,ip))**2
-                  if(if3d) rdist2 = rdist2                      +
-     >                      (xm1b(i,1,1,3,ie) - rproj(4,ip))**2
-                  if (rdist2 .gt. d2chk2_sq) cycle
-               
-                  rexp = exp(rdist2*rproj(1,ip))
-                  
-                  do j=1,7
-                     j1 = j+4
-                     ptwb(i,1,1,j,ie) = ptwb(i,1,1,j,ie) 
-     >                                    + rproj(j1,ip)*rexp
-                  enddo
-                enddo
-             enddo
-          enddo
+
+         ptw(i,j,k,ie,1) = ptw(i,j,k,ie,1) + pfx*rexp
+         ptw(i,j,k,ie,2) = ptw(i,j,k,ie,2) + pfy*rexp
+         ptw(i,j,k,ie,3) = ptw(i,j,k,ie,3) + pfz*rexp
+         ptw(i,j,k,ie,4) = ptw(i,j,k,ie,4) + vol*rexp
+         ptw(i,j,k,ie,5) = ptw(i,j,k,ie,5) + qgqf*rexp
+         ptw(i,j,k,ie,6) = ptw(i,j,k,ie,6) + rvx*rexp
+         ptw(i,j,k,ie,7) = ptw(i,j,k,ie,7) + rvy*rexp
+         ptw(i,j,k,ie,8) = ptw(i,j,k,ie,8) + rvz*rexp
+
+      endif
+      endif
       endif
 
-      ! now send xm1b to the processors in nek that hold xm1
-
-      neltbc = neltb
-      ndum = 6*neltbc
-      call icopy(er_mapc,er_map,ndum)
-      do ie=1,neltbc
-         er_mapc(5,ie) = er_mapc(2,ie)
-         er_mapc(6,ie) = er_mapc(2,ie)
-
       enddo
-      nl = 0
-      nii = 6
-      njj = 6
-      nrr = nxyz*nfldpm
-      call fgslib_crystal_tuple_transfer(i_cr_hndl,neltbc,lbmax
-     >                  , er_mapc,nii,partl,nl,ptwb,nrr,njj)
-
-      ! add the fields from the bins to ptw array
-      nlxyze = lx1*ly1*lz1*lelt
-      call rzero(ptw,nlxyze*7)
-      do ie=1,neltbc
-         iee = er_mapc(1,ie)
-         do ip=1,7
-         do k=1,nz1
-         do j=1,ny1
-         do i=1,nx1
-            ptw(i,j,k,iee,ip) = ptw(i,j,k,iee,ip) + ptwb(i,j,k,ip,ie)
-         enddo
-         enddo
-         enddo
-         enddo
       enddo
+      enddo
+      enddo
+      enddo
+
+      endif
 
 #ifdef CMTNEK
       ! filtering makes velocity field smoother for p*grad(phig) in CMT
-
-c     call dsavg(ptw(1,1,1,1,1))
-c     call dsavg(ptw(1,1,1,1,2))
-c     call dsavg(ptw(1,1,1,1,3))
-c     call dsavg(ptw(1,1,1,1,4))
-c     call dsavg(ptw(1,1,1,1,5))
-c     call dsavg(ptw(1,1,1,1,6))
-c     call dsavg(ptw(1,1,1,1,7))
-
-      wght = 1
+      wght = 1.0
       ncut = 1
-      call filter_s0(ptw(1,1,1,1,1),wght,ncut,'phip') 
-      call filter_s0(ptw(1,1,1,1,2),wght,ncut,'phip') 
-      call filter_s0(ptw(1,1,1,1,3),wght,ncut,'phip') 
       call filter_s0(ptw(1,1,1,1,4),wght,ncut,'phip') 
-      call filter_s0(ptw(1,1,1,1,5),wght,ncut,'phip') 
-      call filter_s0(ptw(1,1,1,1,6),wght,ncut,'phip') 
-      call filter_s0(ptw(1,1,1,1,7),wght,ncut,'phip') 
-
-c     call dsavg(ptw(1,1,1,1,1))
-c     call dsavg(ptw(1,1,1,1,2))
-c     call dsavg(ptw(1,1,1,1,3))
-c     call dsavg(ptw(1,1,1,1,4))
-c     call dsavg(ptw(1,1,1,1,5))
-c     call dsavg(ptw(1,1,1,1,6))
-c     call dsavg(ptw(1,1,1,1,7))
 #endif
 
-      rvfmax = 0.74
-      rvfmin = 1E-15
+      rvfmax = 0.7405
+      rvfmin = 0.0
       do ie=1,nelt
       do k=1,nz1
       do j=1,ny1
@@ -975,53 +849,6 @@ c     call dsavg(ptw(1,1,1,1,7))
       enddo
       enddo
       enddo
-
-c     wght = 1
-c     ncut = 1
-c     call filter_s0(phig,wght,ncut,'phip') 
-c     call filter_s0(ptw(1,1,1,1,5),wght,ncut,'phip') 
-c     call filter_s0(ptw(1,1,1,1,6),wght,ncut,'phip') 
-c     call filter_s0(ptw(1,1,1,1,7),wght,ncut,'phip') 
-
-      nxyze = nxyz*nelt
-
-      call gradm1(phigdum(1,1,1,1,1),
-     >            phigdum(1,1,1,1,2),
-     >            phigdum(1,1,1,1,3),
-     >            phig)
-
-
-      call col2(phigdum(1,1,1,1,1),pr,nxyze)
-      call col2(phigdum(1,1,1,1,2),pr,nxyze)
-      if(if3d) call col2(phigdum(1,1,1,1,3),pr,nxyze)
-
-c     call dsavg(phigdum(1,1,1,1,1))
-c     call dsavg(phigdum(1,1,1,1,2))
-c     call dsavg(phigdum(1,1,1,1,3))
-
-c     nspread = 6
-c     rle = 5.94E-4
-c     rgrad_max = 101325/(nspread*rle)
-
-c     do i=1,nxyze
-c        if (abs(phigdum(i,1,1,1,2)) .lt. rgrad_max) then
-c           if (phigdum(i,1,1,1,2) .lt. 0)
-c    >         phigdum(i,1,1,1,2) = - rgrad_max
-c           if (phigdum(i,1,1,1,2) .gt. 0)
-c    >         phigdum(i,1,1,1,2) = rgrad_max
-c        endif
-c     enddo
-
-
-      call opdiv(phigvdum,ptw(1,1,1,1,5),
-     >                    ptw(1,1,1,1,6),
-     >                    ptw(1,1,1,1,7))
-
-
-      call col2(phigvdum,pr,nxyze)
-      call chsign(phigvdum,nxyze)
-
-c     call dsavg(phigvdum)
 
       return
       end
@@ -1085,11 +912,9 @@ c     all rk3 stages items --------------------------------------------
          rpart(jv0+1,i) = tcoef(1,stage)*kv_stage_p(i,5) +
      >                    tcoef(2,stage)*rpart(jv0+1,i)  +
      >                    tcoef(3,stage)*rpart(jf0+1,i)
-         if (if3d)
-     >   rpart(jv0+2,i) = tcoef(1,stage)*kv_stage_p(i,6) +
+         rpart(jv0+2,i) = tcoef(1,stage)*kv_stage_p(i,6) +
      >                    tcoef(2,stage)*rpart(jv0+2,i)  +
      >                    tcoef(3,stage)*rpart(jf0+2,i)
-
          rpart(jx0  ,i) = tcoef(1,stage)*kv_stage_p(i,1) +
      >                    tcoef(2,stage)*rpart(jx0  ,i)  +
      >                    tcoef(3,stage)*rpart(jv0  ,i)
@@ -1100,12 +925,10 @@ c     all rk3 stages items --------------------------------------------
      >   rpart(jx0+2,i) = tcoef(1,stage)*kv_stage_p(i,3) +
      >                    tcoef(2,stage)*rpart(jx0+2,i)  +
      >                    tcoef(3,stage)*rpart(jv0+2,i)
-
          rpart(jtemp,i) = tcoef(1,stage)*kv_stage_p(i,7) +
      >                    tcoef(2,stage)*rpart(jtemp,i)  +
      >                    tcoef(3,stage)*rpart(jq0  ,i)
       enddo
-
 
       return
       end
@@ -1237,8 +1060,7 @@ c
       lpmv_p(3)    = rpart(jv0+2,i)
       lpmv_f(1)    = rpart(ju0+0,i)
       lpmv_f(2)    = rpart(ju0+1,i)
-      lpmv_f(3)    = 0.0
-      if(if3d) lpmv_f(3)    = rpart(ju0+2,i)
+      lpmv_f(3)    = rpart(ju0+2,i)
       lpmvisc_f    = mu_0
       lpmdiam_p    = rpart(jdp,i)
       lpmdens_p    = rpart(jrhop,i)
@@ -1247,18 +1069,17 @@ c
       lpmtemp_f    = rpart(jtempf,i)
       lpmDuDt(1)   = rpart(jDuDt+0,i)
       lpmDuDt(2)   = rpart(jDuDt+1,i)
-      lpmDuDt(3)   = 0.0
-      if(if3d) lpmDuDt(3)   = rpart(jDuDt+2,i)
+      lpmDuDt(3)   = rpart(jDuDt+2,i)
       lpmkappa_f   = abs(param(8))
-      lpmvdiff_pf  = sqrt((lpmv_p(1) - lpmv_f(1))**2+
-     >                    (lpmv_p(2) - lpmv_f(2))**2+
-     >                    (lpmv_p(3) - lpmv_f(3))**2)
+      lpmvdiff_pf  = sqrt((rpart(ju0  ,i)-rpart(jv0  ,i))**2+
+     >                    (rpart(ju0+1,i)-rpart(jv0+1,i))**2+
+     >                    (rpart(ju0+2,i)-rpart(jv0+2,i))**2)
       if (abs(lpmvdiff_pf) .lt. 1E-6) lpmvdiff_pf=1E-6
 
       lpmmach_p    = MixtPerf_C_GRT_part(gmaref,rgasref,
      >                                   rpart(jtempf,i),icmtp)
       if (icmtp .eq. 0) then
-         lpmmach_p  = 0.0
+         lpmach_p  = 0.0
       elseif (icmtp .eq. 1) then
          lpmmach_p = lpmvdiff_pf/lpmmach_p
       endif
@@ -1439,7 +1260,7 @@ c     compute grad pr
       ! div (phi_p * v)
       do e=1,nelt
         call gradl_rst(ur(1,1,1),us(1,1,1),ut(1,1,1), ! x dir
-     >                                        ptw(1,1,1,e,5),lx1,if3d)
+     >                                        ptw(1,1,1,e,6),lx1,if3d)
             do i=1,nxyz
               rhs_fluidp(i,1,1,e,4) = 1.0d+0/JACM1(i,1,1,e)* !d/dx
      >             (ur(i,1,1)*RXM1(i,1,1,e) +
@@ -1448,7 +1269,7 @@ c     compute grad pr
             enddo
 
         call gradl_rst(ur(1,1,1),us(1,1,1),ut(1,1,1), ! y dir
-     >                                        ptw(1,1,1,e,6),lx1,if3d)
+     >                                        ptw(1,1,1,e,7),lx1,if3d)
             do i=1,nxyz
               rhs_fluidp(i,1,1,e,4) = rhs_fluidp(i,1,1,e,4) +
      >             1.0d+0/JACM1(i,1,1,e)* !d/dy
@@ -1458,7 +1279,7 @@ c     compute grad pr
             enddo
 
         call gradl_rst(ur(1,1,1),us(1,1,1),ut(1,1,1), ! z dir
-     >                                        ptw(1,1,1,e,7),lx1,if3d)
+     >                                        ptw(1,1,1,e,8),lx1,if3d)
         if(if3d) then ! 3d
             do i=1,nxyz
               rhs_fluidp(i,1,1,e,4) = rhs_fluidp(i,1,1,e,4) +
@@ -1517,7 +1338,7 @@ c     compute grad phi_g
       enddo
       enddo
       enddo
-      
+
       return
       end
 c-----------------------------------------------------------------------
@@ -1534,9 +1355,6 @@ c
       real rrp1,rrp2,rvol1,rvol2,rrho1,rrho2,rx1(3),rx2(3),rv1(3),rv2(3)
       real rpx1(3), rpx2(3), rpx0(3),r1(3),r2(3),r3(3)
       common /tcol_b/ rrp1,rvol1,rrho1,rx1,rv1
-
-      integer col_list(llpart,3),ncol
-
 
       ptdum(11) = dnekclock()
 
@@ -1575,27 +1393,15 @@ c
          iczp = icz1 +1
       endif
 
-      ndum1 = ipart(jicn,i)
-
-      ncol = 0
-
 c     let every particle search for itself
 c        particles in local elements
          do j = i+1,n
-c           if( i .eq. j) cycle
-
-            icx2  = ipart(jicx,j)
-            icy2  = ipart(jicy,j)
-            icz2  = ipart(jicz,j)
-            ndum2 = ipart(jicn,j)
-c           if (ndum1 .ne. ndum2) cycle
+            icx2 = ipart(jicx,j)
+            icy2 = ipart(jicy,j)
+            icz2 = ipart(jicz,j)
             if ((icx2.ge.icxm).and.(icx2.le.icxp)) then
             if ((icy2.ge.icym).and.(icy2.le.icyp)) then
             if ((icz2.ge.iczm).and.(icz2.le.iczp)) then
-
-c           if (abs(rpart(jx,i) -rpart(jx,j)) .gt. d2chk(3)) cycle
-c           if (abs(rpart(jy,i) -rpart(jy,j)) .gt. d2chk(3)) cycle
-c           if (abs(rpart(jz,i) -rpart(jz,j)) .gt. d2chk(3)) cycle
 
             rrp2   = rpart(jrpe ,j)
             rvol2  = rpart(jvol ,j)
@@ -1614,16 +1420,10 @@ c           if (abs(rpart(jz,i) -rpart(jz,j)) .gt. d2chk(3)) cycle
             endif
             endif
             endif
-
- 1234 continue
          enddo
-
-
-
 
 c        search list of ghost particles
          do j = 1,nfptsgp
-c        do j = 1,0
             icx2 = iptsgp(jgpicx,j)
             icy2 = iptsgp(jgpicy,j)
             icz2 = iptsgp(jgpicz,j)
@@ -1641,32 +1441,15 @@ c        do j = 1,0
             rv2(2) = rptsgp(jgpv0+1,j)
             rv2(3) = rptsgp(jgpv0+2,j)
 
-c           if (ncol .gt. 0) then           
-c              do k=1,ncol
-c                 if (iptsgp(jgppid1,j) .eq. col_list(k,1)) then
-c                 if (iptsgp(jgppid2,j) .eq. col_list(k,2)) then
-c                 if (iptsgp(jgppid3,j) .eq. col_list(k,3)) then
-c                    goto 1235
-c                 endif
-c                 endif
-c                 endif
-c              enddo
-c           endif
-
             idum = 0
             call compute_collide(mcfac,rrp2,rvol2,rrho2,rx2,rv2,
      >                           rpart(jfcol,i),rdum3,idum)
 
-c           ncol = ncol +1
-c           col_list(ncol,1) = iptsgp(jgppid1,j)
-c           col_list(ncol,2) = iptsgp(jgppid2,j)
-c           col_list(ncol,3) = iptsgp(jgppid3,j)
-
             endif
             endif
             endif
- 1235 continue
          enddo
+ 1235 continue
 
          ! plane wall collisions
          do j = 1,np_walls
@@ -1675,7 +1458,7 @@ c           col_list(ncol,3) = iptsgp(jgppid3,j)
             rnz = plane_wall_coords(3,j)
             rpx = plane_wall_coords(4,j)
             rpy = plane_wall_coords(5,j)
-            rpz = rx1(3)
+            rpz = 1.0
             if (if3d) rpz = plane_wall_coords(6,j)
 
 
@@ -1707,7 +1490,7 @@ c           col_list(ncol,3) = iptsgp(jgppid3,j)
             rnz = cyl_wall_coords(3,j)
             rpx = cyl_wall_coords(4,j)
             rpy = cyl_wall_coords(5,j)
-            rpz = rx1(3)
+            rpz = 1.0
             if (if3d) rpz = cyl_wall_coords(6,j)
 
 
@@ -1851,19 +1634,13 @@ c
       common /myparth/ i_fp_hndl, i_cr_hndl
       logical partl         
 
-c     ndum = iglsum(nfptsgp,1)
-c     if (nid .eq. 0) write(6,*) 'Before nfptsgp',ndum
-
       ! send ghost particles
       call fgslib_crystal_tuple_transfer(i_cr_hndl,nfptsgp,llpart_gp
      $           , iptsgp,nigp,partl,0,rptsgp,nrgp,jgpps) ! jgpps is overwri
 
-c     ndum = iglsum(nfptsgp,1)
-c     if (nid .eq. 0) write(6,*) 'After nfptsgp',ndum
-
       ! sort by element for ghost particles for projection performance
-c     call fgslib_crystal_tuple_sort    (i_cr_hndl,nfptsgp
-c    $              , iptsgp,nigp,partl,0,rptsgp,nrgp,jgpes,1)
+      call fgslib_crystal_tuple_sort    (i_cr_hndl,nfptsgp
+     $              , iptsgp,nigp,partl,0,rptsgp,nrgp,jgpes,1)
 
       return
       end
@@ -1915,516 +1692,15 @@ c
       include 'LPM'
 
       real xdlen,ydlen,zdlen,rxdrng(3),rxnew(3)
-      integer iadd(3),ntypesl(7),iadd2(3)
+      integer iadd(3),ntypesl(7)
 
 ! ------------------------
 c CREATING GHOST PARTICLES
 ! ------------------------
-      xdlen = binb(2) - binb(1)
-      ydlen = binb(4) - binb(3)
+      xdlen = xdrange(2,1) - xdrange(1,1)
+      ydlen = xdrange(2,2) - xdrange(1,2)
       zdlen = -1.
-      if (if3d) zdlen = binb(6) - binb(5)
-      if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) xdlen = -1
-      if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) ydlen = -1
-      if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) zdlen = -1
-
-      rxdrng(1) = xdlen
-      rxdrng(2) = ydlen
-      rxdrng(3) = zdlen
-
-      nfptsgp = 0
-
-      if (npro_method .eq. 0) return ! only for projection
-
-      do ip=1,n
-         rxval = rpart(jx,ip)
-         ryval = rpart(jy,ip)
-         rzval = 0.
-         if(if3d) rzval = rpart(jz,ip)
-
-         iip  = ipart(jicx,ip)
-         jjp  = ipart(jicy,ip)
-         kkp  = ipart(jicz,ip)
-
-         isave = 0
-
-         ! faces
-         do ifc=1,nfacegp
-            ist = (ifc-1)*3
-            ii1 = iip + el_face_num(ist+1) 
-            jj1 = jjp + el_face_num(ist+2)
-            kk1 = kkp + el_face_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 2 .or. iflgsum .eq. 3) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  111 continue
-         enddo
-
-         ! edges
-         do ifc=1,nedgegp
-            ist = (ifc-1)*3
-            ii1 = iip + el_edge_num(ist+1) 
-            jj1 = jjp + el_edge_num(ist+2)
-            kk1 = kkp + el_edge_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 3) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  222 continue
-         enddo
-
-         ! corners
-         do ifc=1,ncornergp
-            ist = (ifc-1)*3
-            ii1 = iip + el_corner_num(ist+1) 
-            jj1 = jjp + el_corner_num(ist+2)
-            kk1 = kkp + el_corner_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 2) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  333 continue
-         enddo
-      enddo
-
-
-      return
-      end
-c----------------------------------------------------------------------
-      subroutine create_ghost_particles_full_new
-c
-c     this routine will create ghost particles by checking if particle
-c     is within d2chk of element faces
-c
-c     ghost particle x,y,z list will be in rptsgp(jgpx,j),rptsgp(jgpy,j),
-c     rptsgp(jgpz,j), while processor and local element id are in
-c     iptsgp(jgppt,j) and iptsgp(jgpes,j)
-c
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      real xdlen,ydlen,zdlen,rxdrng(3),rxnew(3)
-      integer iadd(3),ntypesl(7),iadd2(3)
-
-! ------------------------
-c CREATING GHOST PARTICLES
-! ------------------------
-      xdlen = binb(2) - binb(1)
-      ydlen = binb(4) - binb(3)
-      zdlen = -1.
-      if (if3d) zdlen = binb(6) - binb(5)
-      if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) xdlen = -1
-      if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) ydlen = -1
-      if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) zdlen = -1
-
-      rxdrng(1) = xdlen
-      rxdrng(2) = ydlen
-      rxdrng(3) = zdlen
-
-      nfptsgp = 0
-
-      if (npro_method .eq. 0) return ! only for projection
-
-      do ip=1,n
-         rxval = rpart(jx,ip)
-         ryval = rpart(jy,ip)
-         rzval = 0.
-         if(if3d) rzval = rpart(jz,ip)
-
-         iip  = ipart(jicx,ip)
-         jjp  = ipart(jicy,ip)
-         kkp  = ipart(jicz,ip)
-
-         isave = 0
-
-         ! faces
-         do ifc=1,nfacegp
-            ist = (ifc-1)*3
-            ii1 = iip + el_face_num(ist+1) 
-            jj1 = jjp + el_face_num(ist+2)
-            kk1 = kkp + el_face_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 2 .or. iflgsum .eq. 3) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  111 continue
-         enddo
-
-         ! edges
-         do ifc=1,nedgegp
-            ist = (ifc-1)*3
-            ii1 = iip + el_edge_num(ist+1) 
-            jj1 = jjp + el_edge_num(ist+2)
-            kk1 = kkp + el_edge_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 3) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  222 continue
-         enddo
-
-         ! corners
-         do ifc=1,ncornergp
-            ist = (ifc-1)*3
-            ii1 = iip + el_corner_num(ist+1) 
-            jj1 = jjp + el_corner_num(ist+2)
-            kk1 = kkp + el_corner_num(ist+3)
-
-            iig = ii1
-            jjg = jj1
-            kkg = kk1
-
-            iflgx = 0
-            iflgy = 0
-            iflgz = 0
-            ! periodic if out of domain - add some ifsss
-            if (iig .lt. 0 .or. iig .gt. ndxgp-1) then
-               iflgx = 1
-               iig =modulo(iig,ndxgp)
-               if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) cycle
-            endif
-            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) then
-               iflgy = 1
-               jjg =modulo(jjg,ndygp)
-               if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) cycle
-            endif
-            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) then
-               iflgz = 1  
-               kkg =modulo(kkg,ndzgp)
-               if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) cycle
-            endif
-
-
-            iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 2) cycle
-
-            ndum  = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndum/nreach
-            nrank = modulo(ndumn,np)
-
-c           if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            ibctype = iflgx+iflgy+iflgz
-                 
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            iadd2(1) = iig
-            iadd2(2) = jjg
-            iadd2(3) = kkg
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
-                        
-  333 continue
-         enddo
-      enddo
-
-
-      return
-      end
-c----------------------------------------------------------------------
-      subroutine create_ghost_particles_col
-c
-c     this routine will create ghost particles by checking if particle
-c     is within d2chk of element faces
-c
-c     ghost particle x,y,z list will be in rptsgp(jgpx,j),rptsgp(jgpy,j),
-c     rptsgp(jgpz,j), while processor and local element id are in
-c     iptsgp(jgppt,j) and iptsgp(jgpes,j)
-c
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      real xdlen,ydlen,zdlen,rxdrng(3),rxnew(3)
-      integer iadd(3),ntypesl(7),iadd2(3),gpsave(27)
-
-
-! ------------------------
-c CREATING GHOST PARTICLES
-! ------------------------
-      xdlen = binb(2) - binb(1)
-      ydlen = binb(4) - binb(3)
-      zdlen = -1.
-      if (if3d) zdlen = binb(6) - binb(5)
+      if (if3d) zdlen = xdrange(2,3) - xdrange(1,3)
       if (abs(bc_part(1)) + abs(bc_part(2)) .ne. 0) xdlen = -1
       if (abs(bc_part(3)) + abs(bc_part(4)) .ne. 0) ydlen = -1
       if (abs(bc_part(5)) + abs(bc_part(6)) .ne. 0) zdlen = -1
@@ -2441,22 +1717,49 @@ c CREATING GHOST PARTICLES
          rzval = 0.
          if(if3d) rzval = rpart(jz,ip)
 
-         iip = ipart(jicx,ip) 
-         jjp = ipart(jicy,ip) 
-         kkp = ipart(jicz,ip) 
+         iip    = floor((rxval-xdrange(1,1))/rdxgp) 
+         jjp    = floor((ryval-xdrange(1,2))/rdygp) 
+         kkp    = floor((rzval-xdrange(1,3))/rdzgp) 
+         ndump  = iip + ndxgp*jjp + ndxgp*ndygp*kkp
 
-         rxl = binb(1) + rdxgp*iip
-         rxr = rxl + rdxgp
-         ryl = binb(3) + rdygp*jjp
-         ryr = ryl + rdygp
-         rzl = 0.0
-         rzr = 0.0
-         if (if3d) then
-            rzl = binb(5) + rdzgp*kkp
-            rzr = rzl + rdzgp
+      do i=1,nlist
+         ii = ngp_valsp(3,i)
+         jj = ngp_valsp(4,i)
+         kk = ngp_valsp(5,i)
+
+         ndum = ngp_valsp(2,i)
+         nrank= ngp_valsp(1,i)
+
+         ! add this box
+         if (nid  .ne. nrank) then
+         if (ndum .eq. ndump) then
+
+            rxnew(1) = rxval
+            rxnew(2) = ryval
+            rxnew(3) = rzval
+         
+            iadd(1)  = 0
+            iadd(2)  = ngp_valsp(1,i)
+            iadd(3)  = ipart(ip,je0)
+         
+            call add_a_ghost_particle(rxnew,iadd,ip)
+
+         endif
          endif
 
-         isave = 0
+      enddo
+      enddo
+
+      do ip=1,n
+         rxval = rpart(jx,ip)
+         ryval = rpart(jy,ip)
+         rzval = 0.
+         if(if3d) rzval = rpart(jz,ip)
+
+         iip    = floor((rxval-xdrange(1,1))/rdxgp) 
+         jjp    = floor((ryval-xdrange(1,2))/rdygp) 
+         kkp    = floor((rzval-xdrange(1,3))/rdzgp) 
+         ndump  = iip + ndxgp*jjp + ndxgp*ndygp*kkp
 
          ! faces
          do ifc=1,nfacegp
@@ -2465,30 +1768,6 @@ c CREATING GHOST PARTICLES
             jj1 = jjp + el_face_num(ist+2)
             kk1 = kkp + el_face_num(ist+3)
 
-            distchk = 0.0
-            dist = 0.0
-            if (ii1-iip .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (ii1-iip .lt. 0) dist = dist +(rxval - rxl)**2
-               if (ii1-iip .gt. 0) dist = dist +(rxval - rxr)**2
-            endif
-            if (jj1-jjp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (jj1-jjp .lt. 0) dist = dist +(ryval - ryl)**2
-               if (jj1-jjp .gt. 0) dist = dist +(ryval - ryr)**2
-            endif
-            if (if3d) then
-            if (kk1-kkp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (kk1-kkp .lt. 0) dist = dist +(rzval - rzl)**2
-               if (kk1-kkp .gt. 0) dist = dist +(rzval - rzr)**2
-            endif
-            endif
-            distchk = sqrt(distchk)
-            dist = sqrt(dist)
-            if (dist .gt. distchk) cycle
-               
-
             iig = ii1
             jjg = jj1
             kkg = kk1
@@ -2515,63 +1794,44 @@ c CREATING GHOST PARTICLES
 
 
             iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 2 .or. iflgsum .eq. 3) cycle
+            if (iflgsum .ne. 1) cycle
 
             ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndumn/nreach
-            nrank = modulo(ndumn,np)
-
-            if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
-
-            do i=1,isave
-               if (gpsave(i) .eq. nrank .and. iflgsum .eq.0) goto 111
-            enddo
-            isave = isave + 1
-            gpsave(isave) = nrank
 
 
-            ibctype = iflgx+iflgy+iflgz
+            do i=1,nlist
+               ndum = ngp_valsp(2,i)
+               nrank = ngp_valsp(1,i)
+               iin   = ngp_valsp(3,i)
+               jjn   = ngp_valsp(4,i)
+               kkn   = ngp_valsp(5,i)
+
+               if (ndumn .eq. ndum) then
+                  ibctype = iflgx+iflgy+iflgz
                  
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-
-            idum = iip
-            jdum = jjp
-            kdum = kkp
-
-            if (iflgx .eq. 1) then
-            if (iip .eq. 0)       idum = ndxgp
-            if (iip .eq. ndxgp-1) idum = -1
-            endif
-            if (iflgy .eq. 1) then
-            if (jjp .eq. 0)       jdum = ndygp
-            if (jjp .eq. ndygp-1) jdum = -1
-            endif
-            if (iflgz .eq. 1) then
-            if (kkp .eq. 0)       kdum = ndzgp
-            if (kkp .eq. ndzgp-1) kdum = -1
-            endif
-
-            iadd2(1) = idum
-            iadd2(2) = jdum
-            iadd2(3) = kdum
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
+                  if (nrank .ne. nid .or. 
+     >                    (nrank .eq. nid) .and. (iflgsum.eq.1)) then
+                 
+                      rxnew(1) = rxval
+                      rxnew(2) = ryval
+                      rxnew(3) = rzval
+                 
+                      iadd(1) = ii1
+                      iadd(2) = jj1
+                      iadd(3) = kk1
+                 
+                      call check_periodic_gp(rxnew,rxdrng,iadd)
+                 
+                      iadd(1)  = 0
+                      iadd(2)  = nrank
+                      iadd(3)  = ipart(ip,je0)
+                      
+                      call add_a_ghost_particle(rxnew,iadd,ip)
                         
-  111 continue
+                  endif
+               endif
+            enddo
          enddo
-
          ! edges
          do ifc=1,nedgegp
             ist = (ifc-1)*3
@@ -2579,29 +1839,6 @@ c           if (iflgsum .eq. 2 .or. iflgsum .eq. 3) cycle
             jj1 = jjp + el_edge_num(ist+2)
             kk1 = kkp + el_edge_num(ist+3)
 
-            distchk = 0.0
-            dist = 0.0
-            if (ii1-iip .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (ii1-iip .lt. 0) dist = dist +(rxval - rxl)**2
-               if (ii1-iip .gt. 0) dist = dist +(rxval - rxr)**2
-            endif
-            if (jj1-jjp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (jj1-jjp .lt. 0) dist = dist +(ryval - ryl)**2
-               if (jj1-jjp .gt. 0) dist = dist +(ryval - ryr)**2
-            endif
-            if (if3d) then
-            if (kk1-kkp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (kk1-kkp .lt. 0) dist = dist +(rzval - rzl)**2
-               if (kk1-kkp .gt. 0) dist = dist +(rzval - rzr)**2
-            endif
-            endif
-            distchk = sqrt(distchk)
-            dist = sqrt(dist)
-            if (dist .gt. distchk) cycle
-
             iig = ii1
             jjg = jj1
             kkg = kk1
@@ -2628,63 +1865,44 @@ c           if (iflgsum .eq. 2 .or. iflgsum .eq. 3) cycle
 
 
             iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 3) cycle
+            if (iflgsum .ne. 2) cycle
 
             ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndumn/nreach
-            nrank = modulo(ndumn,np)
 
-            if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
 
-            do i=1,isave
-               if (gpsave(i) .eq. nrank .and. iflgsum .eq.0) goto 222
-            enddo
-            isave = isave + 1
-            gpsave(isave) = nrank
+            do i=1,nlist
+               ndum = ngp_valsp(2,i)
+               nrank = ngp_valsp(1,i)
+               iin   = ngp_valsp(3,i)
+               jjn   = ngp_valsp(4,i)
+               kkn   = ngp_valsp(5,i)
 
-            ibctype = iflgx+iflgy+iflgz
+               if (ndumn .eq. ndum) then
+                  ibctype = iflgx+iflgy+iflgz
                  
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            idum = iip
-            jdum = jjp
-            kdum = kkp
-
-            if (iflgx .eq. 1) then
-            if (iip .eq. 0)       idum = ndxgp
-            if (iip .eq. ndxgp-1) idum = -1
-            endif
-            if (iflgy .eq. 1) then
-            if (jjp .eq. 0)       jdum = ndygp
-            if (jjp .eq. ndygp-1) jdum = -1
-            endif
-            if (iflgz .eq. 1) then
-            if (kkp .eq. 0)       kdum = ndzgp
-            if (kkp .eq. ndzgp-1) kdum = -1
-            endif
-
-            iadd2(1) = idum
-            iadd2(2) = jdum
-            iadd2(3) = kdum
-
-            
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
+                  if (nrank .ne. nid .or. 
+     >                    (nrank .eq. nid) .and. (iflgsum.eq.2)) then
+                 
+                      rxnew(1) = rxval
+                      rxnew(2) = ryval
+                      rxnew(3) = rzval
+                 
+                      iadd(1) = ii1
+                      iadd(2) = jj1
+                      iadd(3) = kk1
+                 
+                      call check_periodic_gp(rxnew,rxdrng,iadd)
+                 
+                      iadd(1)  = 0
+                      iadd(2)  = nrank
+                      iadd(3)  = ipart(ip,je0)
+                      
+                      call add_a_ghost_particle(rxnew,iadd,ip)
                         
-  222 continue
+                  endif
+               endif
+            enddo
          enddo
-
          ! corners
          do ifc=1,ncornergp
             ist = (ifc-1)*3
@@ -2692,29 +1910,6 @@ c           if (iflgsum .eq. 1 .or. iflgsum .eq. 3) cycle
             jj1 = jjp + el_corner_num(ist+2)
             kk1 = kkp + el_corner_num(ist+3)
 
-            distchk = 0.0
-            dist = 0.0
-            if (ii1-iip .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (ii1-iip .lt. 0) dist = dist +(rxval - rxl)**2
-               if (ii1-iip .gt. 0) dist = dist +(rxval - rxr)**2
-            endif
-            if (jj1-jjp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (jj1-jjp .lt. 0) dist = dist +(ryval - ryl)**2
-               if (jj1-jjp .gt. 0) dist = dist +(ryval - ryr)**2
-            endif
-            if (if3d) then
-            if (kk1-kkp .ne. 0) then
-               distchk = distchk + (d2chk(3))**2
-               if (kk1-kkp .lt. 0) dist = dist +(rzval - rzl)**2
-               if (kk1-kkp .gt. 0) dist = dist +(rzval - rzr)**2
-            endif
-            endif
-            distchk = sqrt(distchk)
-            dist = sqrt(dist)
-            if (dist .gt. distchk) cycle
-
             iig = ii1
             jjg = jj1
             kkg = kk1
@@ -2741,67 +1936,49 @@ c           if (iflgsum .eq. 1 .or. iflgsum .eq. 3) cycle
 
 
             iflgsum = iflgx + iflgy + iflgz
-c           if (iflgsum .eq. 1 .or. iflgsum .eq. 2) cycle
+            if (iflgsum .ne. 3) cycle
 
             ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
-            ndumn = ndumn/nreach
-            nrank = modulo(ndumn,np)
 
-            if (nrank .eq. nid .and. iflgsum .eq. 0) cycle
 
-            do i=1,isave
-               if (gpsave(i) .eq. nrank .and. iflgsum .eq.0) goto 333
-            enddo
-            isave = isave + 1
-            gpsave(isave) = nrank
+            do i=1,nlist
+               ndum = ngp_valsp(2,i)
+               nrank = ngp_valsp(1,i)
+               iin   = ngp_valsp(3,i)
+               jjn   = ngp_valsp(4,i)
+               kkn   = ngp_valsp(5,i)
 
-            ibctype = iflgx+iflgy+iflgz
+               if (ndumn .eq. ndum) then
+                  ibctype = iflgx+iflgy+iflgz
                  
-            rxnew(1) = rxval
-            rxnew(2) = ryval
-            rxnew(3) = rzval
-       
-            iadd(1) = ii1
-            iadd(2) = jj1
-            iadd(3) = kk1
-       
-            call check_periodic_gp(rxnew,rxdrng,iadd)
-       
-            iadd(1)  = 0
-            iadd(2)  = nrank
-            iadd(3)  = ipart(ip,je0)
-            
-            idum = iip
-            jdum = jjp
-            kdum = kkp
-
-            if (iflgx .eq. 1) then
-            if (iip .eq. 0)       idum = ndxgp
-            if (iip .eq. ndxgp-1) idum = -1
-            endif
-            if (iflgy .eq. 1) then
-            if (jjp .eq. 0)       jdum = ndygp
-            if (jjp .eq. ndygp-1) jdum = -1
-            endif
-            if (iflgz .eq. 1) then
-            if (kkp .eq. 0)       kdum = ndzgp
-            if (kkp .eq. ndzgp-1) kdum = -1
-            endif
-
-            iadd2(1) = idum
-            iadd2(2) = jdum
-            iadd2(3) = kdum
-
-            call add_a_ghost_particle(rxnew,iadd,iadd2,ip)
+                  if (nrank .ne. nid .or. 
+     >                    (nrank .eq. nid) .and. (iflgsum.eq.3)) then
+                 
+                      rxnew(1) = rxval
+                      rxnew(2) = ryval
+                      rxnew(3) = rzval
+                 
+                      iadd(1) = ii1
+                      iadd(2) = jj1
+                      iadd(3) = kk1
+                 
+                      call check_periodic_gp(rxnew,rxdrng,iadd)
+                 
+                      iadd(1)  = 0
+                      iadd(2)  = nrank
+                      iadd(3)  = ipart(ip,je0)
+                      
+                      call add_a_ghost_particle(rxnew,iadd,ip)
                         
-  333 continue
+                  endif
+               endif
+            enddo
          enddo
       enddo
 
-
       return
       end
-c----------------------------------------------------------------------
+c-----------------------------------------------------------------------
       subroutine check_periodic_gp(rxnew,rxdrng,iadd)
       include 'SIZE'
       include 'TOTAL'
@@ -2883,7 +2060,7 @@ c
       return
       end
 c----------------------------------------------------------------------
-      subroutine add_a_ghost_particle(rxnew,iadd,iadd2,i)
+      subroutine add_a_ghost_particle(rxnew,iadd,i)
 c
 c
       include 'SIZE'
@@ -2891,7 +2068,7 @@ c
       include 'LPM'
 
       real    rxnew(3)
-      integer iadd(3),iadd2(3)
+      integer iadd(3)
 
       nfptsgp = nfptsgp + 1
 
@@ -2914,17 +2091,11 @@ c
       iptsgp(jgpps,nfptsgp)   = iadd(2)        ! overwritten mpi
       iptsgp(jgppt,nfptsgp)   = iadd(2)        ! dest. mpi rank
       iptsgp(jgpes,nfptsgp)   = iadd(3)        ! dest. elment
-      iptsgp(jgpicx,nfptsgp)  = iadd2(1)
-      iptsgp(jgpicy,nfptsgp)  = iadd2(2)
-      iptsgp(jgpicz,nfptsgp)  = iadd2(3)
-      iptsgp(jgppid1,nfptsgp) = ipart(jpid1,i)
-      iptsgp(jgppid2,nfptsgp) = ipart(jpid2,i)
-      iptsgp(jgppid3,nfptsgp) = ipart(jpid3,i)
 
       return
       end
 c-----------------------------------------------------------------------
-      subroutine setup_bins
+      subroutine compute_neighbor_el_proc
       include 'SIZE'
       include 'TOTAL'
       include 'LPM'
@@ -2933,67 +2104,11 @@ c-----------------------------------------------------------------------
 
       real pfx,pfy,pfz,vol,qgqf,rvx,rvy,rvz,rexp,multfc,multfci,rx2(3)
      >     ,rxyzp(6,3)
-      integer ntypesl(7), ngp_trim(lbmax)
+      integer ntypesl(7), ngp_trim(nbox_gp)
 
       real    rxnew(3), rxdrng(3)
       integer iadd(3)
 
-
-      logical partl
-
-      ! compute binb
-      xmin = 1E8
-      ymin = 1E8
-      zmin = 1E8
-      xmax = 0.
-      ymax = 0.
-      zmax = 0.
-      do i=1,n
-         rduml = rpart(jx,i) - d2chk(1)
-         rdumr = rpart(jx,i) + d2chk(1)
-         if (rduml .lt. xmin) xmin = rduml
-         if (rdumr .gt. xmax) xmax = rdumr
-
-         rduml = rpart(jy,i) - d2chk(1)
-         rdumr = rpart(jy,i) + d2chk(1)
-         if (rduml .lt. ymin) ymin = rduml
-         if (rdumr .gt. ymax) ymax = rdumr
-
-         rduml = rpart(jz,i) - d2chk(1)
-         rdumr = rpart(jz,i) + d2chk(1)
-         if (rduml .lt. zmin) zmin = rduml
-         if (rdumr .gt. zmax) zmax = rdumr
-      enddo
-
-      binb(1) = glmin(xmin,1)
-      binb(2) = glmax(xmax,1)
-      binb(3) = glmin(ymin,1)
-      binb(4) = glmax(ymax,1)
-      binb(5) = 0.0
-      binb(6) = 0.0
-      if(if3d) binb(5) = glmin(zmin,1)
-      if(if3d) binb(6) = glmax(zmax,1)
-
-      binb(1) = max(binb(1),xdrange(1,1))
-      binb(2) = min(binb(2),xdrange(2,1))
-      binb(3) = max(binb(3),xdrange(1,2))
-      binb(4) = min(binb(4),xdrange(2,2))
-      if(if3d)binb(5) = max(binb(5),xdrange(1,3))
-      if(if3d)binb(6) = min(binb(6),xdrange(2,3))
-
-      if (bc_part(1) .eq. 0) then
-         binb(1) = xdrange(1,1)
-         binb(2) = xdrange(2,1)
-      endif
-      if (bc_part(3) .eq. 0) then
-         binb(3) = xdrange(1,2)
-         binb(4) = xdrange(2,2)
-      endif
-      if (bc_part(5) .eq. 0 .and. if3d) then
-         binb(5) = xdrange(1,3)
-         binb(6) = xdrange(2,3)
-      endif
-         
 c     face, edge, and corner number, x,y,z are all inline, so stride=3
       el_face_num = (/ -1,0,0, 1,0,0, 0,-1,0, 0,1,0, 0,0,-1, 0,0,1 /)
       el_edge_num = (/ -1,-1,0 , 1,-1,0, 1,1,0 , -1,1,0 ,
@@ -3017,49 +2132,24 @@ c     face, edge, and corner number, x,y,z are all inline, so stride=3
 c SETUP 3D BACKGROUND GRID PARAMETERS FOR GHOST PARTICLES
 ! -------------------------------------------------------
       ! how many spacings in each direction
-      ndxgp = floor( (binb(2) - binb(1))/d2chk(1))
-      ndygp = floor( (binb(4) - binb(3))/d2chk(1))
+      ndxgp = floor( (xdrange(2,1) - xdrange(1,1))/d2chk(1)) +1
+      ndygp = floor( (xdrange(2,2) - xdrange(1,2))/d2chk(1))+1
       ndzgp = 1
-      if (if3d) ndzgp = floor( (binb(6) - binb(5))/d2chk(1))
+      if (if3d) ndzgp = floor( (xdrange(2,3) - xdrange(1,3))/d2chk(1))+1
+
+      nreach = floor(real(ndxgp*ndygp*ndzgp)/real(np))
 
       ! grid spacing for that many spacings
-      rdxgp = (binb(2) - binb(1))/real(ndxgp)
-      rdygp = (binb(4) - binb(3))/real(ndygp)
+      rdxgp = (xdrange(2,1) - xdrange(1,1))/real(ndxgp)
+      rdygp = (xdrange(2,2) - xdrange(1,2))/real(ndygp)
       rdzgp = 1.
-      if (if3d) rdzgp = (binb(6) - binb(5))/real(ndzgp)
+      if (if3d) rdzgp = (xdrange(2,3) - xdrange(1,3))/real(ndzgp)
 
-      ninc = 8
-      if (bc_part(1) .ne. 0) then
-         binb(1) = binb(1) - ninc/2*rdxgp
-         binb(2) = binb(2) + ninc/2*rdxgp
-         ndxgp = ndxgp + ninc
-      endif
-      if (bc_part(3) .ne. 0) then
-         binb(3) = binb(3) - ninc/2*rdygp
-         binb(4) = binb(4) + ninc/2*rdygp
-         ndygp = ndygp + ninc
-      endif
-      if (bc_part(5) .ne. 0) then
-      if (if3d) then
-         binb(5) = binb(5) - ninc/2*rdzgp
-         binb(6) = binb(6) + ninc/2*rdzgp
-         ndzgp = ndzgp + ninc
-      endif
-      endif
-
-      nbin_now = ndxgp*ndygp*ndzgp
-c     if (nbin_now .eq. nbin_save) return ! except not all the time..
-
-      nreach = nbin_new/np
-      nreach = max(1,nreach)
-
-c     if (nid.eq.0) write(6,*) 'Setting up bins'
-c     if (nid.eq.0) write(6,*) ndxgp,ndygp,ndzgp,d2chk(1), np,nbin_now
-
-      if (npro_method .eq. 0) return ! only for projection
-
-! see which bins are in which elements
-      neltb = 0
+! ------------------------------------------------------------
+c Connect boxes to 1D processor map they should be arranged on
+! ------------------------------------------------------------
+      ! Add my own box and what rank(s) it is in the 1D proc map
+      nlist = 0
       do ie=1,nelt
       do k=1,nz1
       do j=1,ny1
@@ -3069,251 +2159,289 @@ c     if (nid.eq.0) write(6,*) ndxgp,ndygp,ndzgp,d2chk(1), np,nbin_now
          rzval = 0.
          if(if3d) rzval = zm1(i,j,k,ie)
 
-         if (rxval .gt. binb(2)) goto 1233
-         if (rxval .lt. binb(1)) goto 1233
-         if (ryval .gt. binb(4)) goto 1233
-         if (ryval .lt. binb(3)) goto 1233
-         if (if3d .and. rzval .gt. binb(6)) goto 1233
-         if (if3d .and. rzval .lt. binb(5)) goto 1233
-
-         ii    = floor((rxval-binb(1))/rdxgp) 
-         jj    = floor((ryval-binb(3))/rdygp) 
-         kk    = floor((rzval-binb(5))/rdzgp) 
-         if (.not. if3d) kk = 0
-         if (ii .eq. ndxgp) ii = ndxgp - 1
-         if (jj .eq. ndygp) jj = ndygp - 1
-         if (kk .eq. ndzgp) kk = ndzgp - 1
-         ndum  = ii + ndxgp*jj + ndxgp*ndygp*kk
-         ndum = ndum/nreach
-         nrank = modulo(ndum,np)
-
-         neltb = neltb + 1
-         if(neltb .gt. lbmax) then
-           write(6,*) 'increase lbmax',nid,neltb,lbmax
-           call exitt
-         endif
-
-c        ptw(i,j,k,ie,1) = ii
-c        ptw(i,j,k,ie,2) = jj
-c        ptw(i,j,k,ie,3) = kk
-c        ptw(i,j,k,ie,4) = ndum
-
-         er_map(1,neltb) = ie
-         er_map(2,neltb) = nid
-         er_map(3,neltb) = ndum
-         er_map(4,neltb) = nrank
-         er_map(5,neltb) = nrank
-         er_map(6,neltb) = nrank
-
-         if (neltb .gt. 1) then
-         do il=1,neltb-1
-            if (er_map(1,il) .eq. ie) then
-            if (er_map(4,il) .eq. nrank) then
-               neltb = neltb - 1
-               goto 1233
-            endif
-            endif
-         enddo
-         endif
-
-
- 1233 continue
-      enddo
-      enddo
-      enddo
-      enddo
-
-c     call output_two_way_io
-c     call exitt
-
-
-      nxyz = lx1*ly1*lz1
-      do ie=1,neltb
-         iee = er_map(1,ie)
-         call copy(xm1b(1,1,1,1,ie), xm1(1,1,1,iee),nxyz)
-         call copy(xm1b(1,1,1,2,ie), ym1(1,1,1,iee),nxyz)
-         call copy(xm1b(1,1,1,3,ie), zm1(1,1,1,iee),nxyz)
-      enddo
-
-      neltbb = neltb
-
-      do ie=1,neltbb
-         call icopy(er_maps(1,ie),er_map(1,ie),6)
-      enddo
-
-
-      nl = 0
-      nii = 6
-      njj = 6
-      nrr = nxyz*3
-      call fgslib_crystal_tuple_transfer(i_cr_hndl,neltb,lbmax
-     >                  , er_map,nii,partl,nl,xm1b,nrr,njj)
-
-
-      call partition_bins
-
-c     call output_two_way_io
-c     call exitt
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine partition_bins
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      common /myparth/ i_fp_hndl, i_cr_hndl
-
-      logical partl
-
-      real xerange(2,3,lbmax)
-      common /lpm_elementrange/ xerange
-
-      integer irmv(lbmax)
-
-         nxyz = lx1*ly1*lz1
-
-c     if (nbin_now .lt. np) then
-
-c        do i=1,np
-c           lpm_binsort(1,i) = i-1
-c           lpm_binsort(2,i) = n
-c           lpm_binsort(3,i) = i-1
-c        enddo
-c        
-c        nps   = 1 ! index of new proc for doing stuff
-c        nglob = 2 ! unique key to sort by
-c        nkey  = 1 ! number of keys (just 1 here)
-c        ndum = 3
-c        call fgslib_crystal_ituple_transfer(i_cr_hndl,lpm_binsort,
-c    >                 ndum,np,lpmax,nps)
-c        call fgslib_crystal_ituple_sort(i_cr_hndl,lpm_binsort,
-c    >                 ndum,np,nglob,nkey)
-
-c        call bcast(lpm_binsort, 3*np*isize)
-
-c        np_high = np
-c        np_low  = np - nbin_now +1
-c        np_low  = max(np_low,nbin_now)
-
-c        if (n .gt. 0) then
-c        do i=np_high,np_low,-1
-c           if (lpm_binsort(1,i) .eq. nid) then
-c              ii = np_high + 1 - i
-c              neltb_save = neltb
-c              do ie=1,neltb_save
-c                 neltb = neltb + 1
-c                 call icopy(er_map(1,neltb),er_map(1,ie),4)
-c                 er_map(5,ie)    = er_map(4,ie)
-c                 er_map(6,ie)    = er_map(4,ie)
-c                 er_map(5,neltb) = lpm_binsort(1,ii)
-c                 er_map(6,neltb) = lpm_binsort(1,ii)
-
-c                 call copy(xm1b(1,1,1,1,neltb), xm1b(1,1,1,1,ie),nxyz)
-c                 call copy(xm1b(1,1,1,2,neltb), xm1b(1,1,1,2,ie),nxyz)
-c                 call copy(xm1b(1,1,1,3,neltb), xm1b(1,1,1,3,ie),nxyz)
-c              enddo
-c           endif
-c        enddo
+c        if (rxval .gt. rxbo(2,1) .or. 
+c    >       rxval .lt. rxbo(1,1) .or. 
+c    >       ryval .gt. rxbo(2,2) .or. 
+c    >       ryval .lt. rxbo(1,2) ) then
+c            goto 1234
+c        endif
+c        if (if3d) then
+c        if (rzval .gt. rxbo(2,3) .or. 
+c    >       rzval .lt. rxbo(1,3) ) then
+c            goto 1234
+c        endif
 c        endif
 
-c     endif
-
-c     nl = 0
-c     nii = 6
-c     njj = 6
-c     nrr = nxyz*3
-c     nkey = 3
-c     call fgslib_crystal_tuple_transfer(i_cr_hndl,neltb,lbmax
-c    >                  , er_map,nii,partl,nl,xm1b,nrr,njj)
-
-
-      nl = 0
-      nii = 6
-      njj = 6
-      nrr = nxyz*3
-      nkey = 3
-      call fgslib_crystal_tuple_sort    (i_cr_hndl,neltb
-     $              , er_map,nii,partl,nl,xm1b,nrr,nkey,1)
-
-
-
-c     nd_min = iglmin(neltb,1)
-c     nd_max = iglmax(neltb,1)
-c     nd_sum = iglsum(neltb,1)
-c     if (nid.eq.0) write(6,*) 'Finished setting up bins'
-c     if (nid.eq.0) write(6,*) ndxgp,ndygp,ndzgp,nd_sum,nd_min,nd_max
-      
-      do ie=1,neltb
-      do k=1,nz1
-      do j=1,ny1
-      do i=1,nx1
-         rxval = xm1b(i,j,k,1,ie)
-         ryval = xm1b(i,j,k,2,ie)
-         rzval = 0.
-         if(if3d) rzval = xm1b(i,j,k,3,ie)
-         
-         ii    = floor((rxval-binb(1))/rdxgp) 
-         jj    = floor((ryval-binb(3))/rdygp) 
-         kk    = floor((rzval-binb(5))/rdzgp) 
-         if (.not. if3d) kk = 0
+         ii    = floor((rxval-xdrange(1,1))/rdxgp) 
+         jj    = floor((ryval-xdrange(1,2))/rdygp) 
+         kk    = floor((rzval-xdrange(1,3))/rdzgp) 
          if (ii .eq. ndxgp) ii = ndxgp - 1
          if (jj .eq. ndygp) jj = ndygp - 1
          if (kk .eq. ndzgp) kk = ndzgp - 1
          ndum  = ii + ndxgp*jj + ndxgp*ndygp*kk
 
-c        ptw(i,j,k,er_map(1,ie),1) = ii
-c        ptw(i,j,k,er_map(1,ie),2) = jj
-c        ptw(i,j,k,er_map(1,ie),3) = kk
-c        ptw(i,j,k,er_map(1,ie),4) = ndum
-      
          mod_gp_grid(i,j,k,ie,1) = ii
          mod_gp_grid(i,j,k,ie,2) = jj
          mod_gp_grid(i,j,k,ie,3) = kk
          mod_gp_grid(i,j,k,ie,4) = ndum
-   
-      enddo
-      enddo
-      enddo
-      enddo
 
-c     call output_two_way_io
-c     call exitt
-
-      do ie=1,neltb
-         xerange(1,1,ie) = vlmin(xm1b(1,1,1,1,ie),nxyz)
-         xerange(2,1,ie) = vlmax(xm1b(1,1,1,1,ie),nxyz)
-         xerange(1,2,ie) = vlmin(xm1b(1,1,1,2,ie),nxyz)
-         xerange(2,2,ie) = vlmax(xm1b(1,1,1,2,ie),nxyz)
-         xerange(1,3,ie) = vlmin(xm1b(1,1,1,3,ie),nxyz)
-         xerange(2,3,ie) = vlmax(xm1b(1,1,1,3,ie),nxyz)
-
-         ilow  = floor((xerange(1,1,ie) - binb(1))/rdxgp)
-         ihigh = floor((xerange(2,1,ie) - binb(1))/rdxgp)
-         jlow  = floor((xerange(1,2,ie) - binb(3))/rdygp)
-         jhigh = floor((xerange(2,2,ie) - binb(3))/rdygp)
-         klow  = floor((xerange(1,3,ie) - binb(5))/rdzgp)
-         khigh = floor((xerange(2,3,ie) - binb(5))/rdzgp)
-         if (.not. if3d) then
-            klow = 0
-            khigh = 0
+         nlist = nlist + 1
+         if (nlist .gt. nbox_gp) then
+            write(6,*)'Increase nbox_gp. Need more sub-box storage',
+     $                      nbox_gp, nlist, nid, ie
+            call exitt
          endif
 
-         lpm_el_map(1,ie) = ilow  + ndxgp*jlow  + ndxgp*ndygp*klow
-         lpm_el_map(2,ie) = ihigh + ndxgp*jhigh + ndxgp*ndygp*khigh
-         lpm_el_map(3,ie) = ilow
-         lpm_el_map(4,ie) = ihigh
-         lpm_el_map(5,ie) = jlow
-         lpm_el_map(6,ie) = jhigh
-         lpm_el_map(7,ie) = klow
-         lpm_el_map(8,ie) = khigh
+         ngp_valsp(1,nlist) = nid
+         ngp_valsp(2,nlist) = ndum
+         ngp_valsp(3,nlist) = ii
+         ngp_valsp(4,nlist) = jj
+         ngp_valsp(5,nlist) = kk
+         ngp_valsp(6,nlist) = floor(real(ndum)/real(nreach))
+
+         if (nlist .gt. 1) then
+         do il=1,nlist-1
+            if (ngp_valsp(2,il) .eq. ndum) then
+               nlist = nlist - 1
+               goto 1234
+            endif
+         enddo
+         endif
+ 1234 continue
+      enddo
+      enddo
+      enddo
       enddo
 
 
+      ! Add connecting boxes and what rank(s) they are in the 1D proc map
+      nlist_save = nlist
+      do i=1,nlist_save
+         ii = ngp_valsp(3,i)
+         jj = ngp_valsp(4,i)
+         kk = ngp_valsp(5,i)
 
-      nbin_save = nbin_now
+         ! faces
+         do ifc=1,nfacegp
+            ist = (ifc-1)*3
+            ii1 = ii + el_face_num(ist+1) 
+            jj1 = jj + el_face_num(ist+2)
+            kk1 = kk + el_face_num(ist+3)
 
+            iig = ii1
+            jjg = jj1
+            kkg = kk1
+
+            ! periodic if out of domain
+            if (iig .lt. 0 .or. iig .gt. ndxgp-1) iig =modulo(iig,ndxgp)
+            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) jjg =modulo(jjg,ndygp)
+            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) kkg =modulo(kkg,ndzgp)
+
+            ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
+
+            do j=1,nlist
+               if (ngp_valsp(2,j) .eq. ndumn) goto 999
+            enddo
+
+            nlist = nlist + 1
+
+            ngp_valsp(1,nlist) = nid
+            ngp_valsp(2,nlist) = ndumn
+            ngp_valsp(6,nlist) = floor(real(ndumn)/real(nreach))
+
+            if (ii1 .gt. ndxgp-1) then
+               ii1 = -1
+            elseif (ii1 .lt. 0) then
+               ii1 = ndxgp
+            endif
+            if (jj1 .gt. ndygp-1) then
+               jj1 = -1
+            elseif (jj1 .lt. 0) then
+               jj1 = ndygp
+            endif
+            if (kk1 .gt. ndzgp-1) then
+               kk1 = -1
+            elseif (kk1 .lt. 0) then
+               kk1 = ndzgp
+            endif
+
+            ngp_valsp(3,nlist) = ii1
+            ngp_valsp(4,nlist) = jj1
+            ngp_valsp(5,nlist) = kk1
+
+  999 continue
+         enddo
+         ! edges
+         do ifc=1,nedgegp
+            ist = (ifc-1)*3
+            ii1 = ii + el_edge_num(ist+1) 
+            jj1 = jj + el_edge_num(ist+2)
+            kk1 = kk + el_edge_num(ist+3)
+
+            iig = ii1
+            jjg = jj1
+            kkg = kk1
+
+            ! periodic if out of domain
+            if (iig .lt. 0 .or. iig .gt. ndxgp-1) iig =modulo(iig,ndxgp)
+            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) jjg =modulo(jjg,ndygp)
+            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) kkg =modulo(kkg,ndzgp)
+
+            ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
+
+            do j=1,nlist
+               if (ngp_valsp(2,j) .eq. ndumn) goto 998
+            enddo
+
+            nlist = nlist + 1
+
+            ngp_valsp(1,nlist) = nid
+            ngp_valsp(2,nlist) = ndumn
+            ngp_valsp(6,nlist) = floor(real(ndumn)/real(nreach))
+
+            if (ii1 .gt. ndxgp-1) then
+               ii1 = -1
+            elseif (ii1 .lt. 0) then
+               ii1 = ndxgp
+            endif
+            if (jj1 .gt. ndygp-1) then
+               jj1 = -1
+            elseif (jj1 .lt. 0) then
+               jj1 = ndygp
+            endif
+            if (kk1 .gt. ndzgp-1) then
+               kk1 = -1
+            elseif (kk1 .lt. 0) then
+               kk1 = ndzgp
+            endif
+
+            ngp_valsp(3,nlist) = ii1
+            ngp_valsp(4,nlist) = jj1
+            ngp_valsp(5,nlist) = kk1
+
+  998 continue
+         enddo
+         ! corners
+         do ifc=1,ncornergp
+            ist = (ifc-1)*3
+            ii1 = ii + el_corner_num(ist+1) 
+            jj1 = jj + el_corner_num(ist+2)
+            kk1 = kk + el_corner_num(ist+3)
+
+            iig = ii1
+            jjg = jj1
+            kkg = kk1
+
+            ! periodic if out of domain
+            if (iig .lt. 0 .or. iig .gt. ndxgp-1) iig =modulo(iig,ndxgp)
+            if (jjg .lt. 0 .or. jjg .gt. ndygp-1) jjg =modulo(jjg,ndygp)
+            if (kkg .lt. 0 .or. kkg .gt. ndzgp-1) kkg =modulo(kkg,ndzgp)
+
+            ndumn = iig + ndxgp*jjg + ndxgp*ndygp*kkg
+
+            do j=1,nlist
+               if (ngp_valsp(2,j) .eq. ndumn) goto 997
+            enddo
+
+            nlist = nlist + 1
+
+            ngp_valsp(1,nlist) = nid
+            ngp_valsp(2,nlist) = ndumn
+            ngp_valsp(6,nlist) = floor(real(ndumn)/real(nreach))
+
+            if (ii1 .gt. ndxgp-1) then
+               ii1 = -1
+            elseif (ii1 .lt. 0) then
+               ii1 = ndxgp
+            endif
+            if (jj1 .gt. ndygp-1) then
+               jj1 = -1
+            elseif (jj1 .lt. 0) then
+               jj1 = ndygp
+            endif
+            if (kk1 .gt. ndzgp-1) then
+               kk1 = -1
+            elseif (kk1 .lt. 0) then
+               kk1 = ndzgp
+            endif
+
+            ngp_valsp(3,nlist) = ii1
+            ngp_valsp(4,nlist) = jj1
+            ngp_valsp(5,nlist) = kk1
+
+  997 continue
+         enddo
+      enddo
+
+! ------------------------
+c SEND TO 1D PROCESSOR MAP
+! ------------------------
+      nps   = 6 ! index of new proc for doing stuff
+      nglob = 2 ! unique key to sort by
+      nkey  = 1 ! number of keys (just 1 here)
+      call fgslib_crystal_ituple_transfer(i_cr_hndl,ngp_valsp,
+     >                 ngpvc,nlist,nbox_gp,nps)
+      call fgslib_crystal_ituple_sort(i_cr_hndl,ngp_valsp,
+     >                 ngpvc,nlist,nglob,nkey)
+
+      ! trim down so no duplicates
+      do i=1,nlist
+         ngp_trim(i) = 1
+      enddo
+      do i=1,nlist
+      do j=i+1,nlist
+         if (ngp_trim(j) .eq. 1) then
+            if (ngp_valsp(1,i) .eq. ngp_valsp(1,j) ) then
+            if (ngp_valsp(2,i) .eq. ngp_valsp(2,j) ) then
+               ngp_trim(j) = 0
+            endif
+            endif
+         endif
+      enddo
+      enddo
+      ic = 0
+      do i=1,nlist
+         if (ngp_trim(i) .eq. 1) then
+            ic = ic + 1
+            call icopy(ngp_valsp(1,ic),ngp_valsp(1,i),ngpvc)
+          endif
+      enddo
+
+      nlist = ic
+
+      ! create dupicates to send to remote processors
+      nlist_save = nlist
+      do i=1,nlist_save
+         irnk = ngp_valsp(1,i)
+         igbl = ngp_valsp(2,i)
+
+         do j=1,nlist_save
+            jrnk = ngp_valsp(1,j)
+            jgbl = ngp_valsp(2,j)
+            if (i .eq. j) cycle
+            if (irnk .eq. jrnk) cycle
+            if (igbl .ne. jgbl) cycle
+            nlist = nlist + 1
+            if (nlist .gt. nbox_gp) then
+               write(6,*)'Increase nbox_gp. In dup. loop',
+     $                         nbox_gp, nlist, nid
+               call exitt
+            endif
+            call icopy(ngp_valsp(1,nlist),ngp_valsp(1,i),ngpvc)
+            ngp_valsp(6,nlist) = ngp_valsp(1,j)
+         enddo
+      enddo
+
+! ----------------------------------------------
+c SEND BACK TO ALL PROCESSORS WITH ADDITIONS NOW
+! ----------------------------------------------
+      nps   = 6 ! index of new proc for doing stuff
+      nglob = 2 ! unique key to sort by
+      nkey  = 1 ! number of keys (just 1 here)
+      call fgslib_crystal_ituple_transfer(i_cr_hndl,ngp_valsp,
+     >                 ngpvc,nlist,nbox_gp,nps)
+      call fgslib_crystal_ituple_sort(i_cr_hndl,ngp_valsp,
+     >                 ngpvc,nlist,nglob,nkey)
 
       return
       end
@@ -3510,6 +2638,41 @@ c     > if bc_part = -1,1 then particles are killed (outflow)
 c-----------------------------------------------------------------------
 c     interpolation routines
 c-----------------------------------------------------------------------
+      subroutine tri_interp(ii,jj,kk,x,y,z,rset,xx,yy,zz,fld)
+      include 'SIZE'
+      include 'INPUT'
+      include 'SOLN'
+      include 'LPM'
+      include 'GEOM'
+
+      real xx(lx1,ly1,lz1),yy(lx1,ly1,lz1),zz(lx1,ly1,lz1)
+     >    ,fld(lx1,ly1,lz1)
+
+      iip = ii +1
+      jjp = jj +1
+      kkp = kk
+      if (if3d) kkp = kk +1
+
+      xd = (x - xx(ii,jj,kk))/(xx(iip,jj,kk)-xx(ii,jj,kk))
+      yd = (y - yy(ii,jj,kk))/(yy(ii,jjp,kk)-yy(ii,jj,kk))
+      zd = 0.0
+      if(if3d) zd = (z - zz(ii,jj,kk))/(zz(ii,jj,kkp)-zz(ii,jj,kk))
+
+      c00=fld(ii,jj,kk)*(1.-xd)+fld(iip,jj,kk)*xd
+      c10=fld(ii,jjp,kk)*(1.-xd)+fld(iip,jjp,kk)*xd
+
+      if (if3d) then
+      c01=fld(ii,jj,kkp)*(1.-xd)+fld(iip,jj,kkp)*xd
+      c11=fld(ii,jjp,kkp)*(1.-xd)+fld(iip,jjp,kkp)*xd
+      c1_1 = c01*(1.-yd) + c11*yd
+      rset = c1_0*(1.-zd) + c1_1*zd
+      else
+      rset = c00*(1.-yd) + c10*yd
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
       subroutine interp_props_part_location
       include 'SIZE'
       include 'INPUT'
@@ -3522,549 +2685,101 @@ c-----------------------------------------------------------------------
       if (red_interp .eq. 0) then
 
       elseif (red_interp .eq. 1) then
+      ! note that all data is local now
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+0,1),nr,
+     &                                   ipart(je0,1)  ,ni,
+     &                                   rpart(jr,1)   ,nr,n,
+     &                                   vx)
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+1,1),nr,
+     &                                   ipart(je0,1)  ,ni,
+     &                                   rpart(jr,1)   ,nr,n,
+     &                                   vy)
+      if (if3d)
+     &call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+2,1),nr,
+     &                                   ipart(je0,1)  ,ni,
+     &                                   rpart(jr,1)   ,nr,n,
+     &                                   vz)
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(jtempf,1),nr,
+     &                                   ipart(je0,1)   ,ni,
+     &                                   rpart(jr,1)    ,nr,n,
+     &                                   t)
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(jrho,1)  ,nr,
+     &                                   ipart(je0,1)   ,ni,
+     &                                   rpart(jr,1)    ,nr,n,
+     &                                   vtrans)
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+0,1) ,nr,
+     &                                   ipart(je0,1)     ,ni,
+     &                                   rpart(jr,1)      ,nr,n,
+     &                                   rhs_fluidp(1,1,1,1,1))
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+1,1) ,nr,
+     &                                   ipart(je0,1)     ,ni,
+     &                                   rpart(jr,1)      ,nr,n,
+     &                                   rhs_fluidp(1,1,1,1,2))
+      if (if3d)
+     &call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+2,1) ,nr,
+     &                                   ipart(je0,1)     ,ni,
+     &                                   rpart(jr,1)      ,nr,n,
+     &                                   rhs_fluidp(1,1,1,1,3))
+      call fgslib_findpts_eval_local(i_fp_hndl,rpart(jvol1,1)   ,nr,
+     &                                   ipart(je0,1)     ,ni,
+     &                                   rpart(jr,1)      ,nr,n,
+     &                                   ptw(1,1,1,1,4))
 
-      if (ifrectp .eq. 0) then
-      ! set location but don't move...
-      call fgslib_findpts(i_fp_hndl !  stride     !   call fgslib_findpts( ihndl,
-     $        , ipart(jrc,1),li        !   $             rcode,1,
-     $        , ipart(jpt,1),li        !   &             proc,1,
-     $        , ipart(je0,1),li        !   &             elid,1,
-     $        , rpart(jr ,1),lr        !   &             rst,ndim,
-     $        , rpart(jd ,1),lr        !   &             dist,1,
-     $        , rpart(jx ,1),lr        !   &             pts(    1),1,
-     $        , rpart(jy ,1),lr        !   &             pts(  n+1),1,
-     $        , rpart(jz ,1),lr ,n)    !   &             pts(2*n+1),1,n)
-
-      ! when data is non-local
-      call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+0,1),nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)  ,ni,
-     &                             rpart(jr,1)   ,nr,n,
-     &                             vx)
-      call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+1,1),nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)  ,ni,
-     &                             rpart(jr,1)   ,nr,n,
-     &                             vy)
-      call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+2,1),nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)  ,ni,
-     &                             rpart(jr,1)   ,nr,n,
-     &                             vz)
-      call fgslib_findpts_eval(i_fp_hndl,rpart(jrho,1)  ,nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)   ,ni,
-     &                             rpart(jr,1)    ,nr,n,
-     &                             vtrans)
-      call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+0,1) ,nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)     ,ni,
-     &                             rpart(jr,1)      ,nr,n,
-     &                             rhs_fluidp(1,1,1,1,1))
-      call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+1,1) ,nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)     ,ni,
-     &                             rpart(jr,1)      ,nr,n,
-     &                             rhs_fluidp(1,1,1,1,2))
-      call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+2,1) ,nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)     ,ni,
-     &                             rpart(jr,1)      ,nr,n,
-     &                             rhs_fluidp(1,1,1,1,3))
-      call fgslib_findpts_eval(i_fp_hndl,rpart(jvol1,1)   ,nr,
-     &                             ipart(jrc,1)  ,ni,
-     &                             ipart(jpt,1)  ,ni,
-     &                             ipart(je0,1)     ,ni,
-     &                             rpart(jr,1)      ,nr,n,
-     &                             ptw(1,1,1,1,4))
-
-
-c        call dzlib_interp
-
-      else
-         call dzlib_findpts
-         call dzlib_nflist
-
-
-c        jps = jpid1-1     ! Pointer to temporary proc id for swapping
-c        do i=1,n        ! Can't use jpt because it messes up particle info
-c           ipart(jps,i) = ipart(jpt,i)
+      ! trilinear interpolation below
+c     do ip=1,n
+c        ie = ipart(je0,ip) + 1
+c        ii = 1
+c        jj = 1
+c        kk = 1
+c        do k=1,nz1
+c        do j=1,ny1
+c        do i=1,nx1
+c           if (xm1(i,j,k,ie) .lt. rpart(jx,ip)) ii = i
+c           if (ym1(i,j,k,ie) .lt. rpart(jy,ip)) jj = j
+c           if (zm1(i,j,k,ie) .lt. rpart(jz,ip)) zz = k
 c        enddo
-c        call fgslib_crystal_tuple_transfer(i_cr_hndl,n,llpart
-c    $           , ipart,ni,partl,nl,rpart,nr,jps)
-
-c        nplow = iglmin(n,1)
-c        nptot = iglsum(n,1)
-c        nphigh = iglmax(n,1)
-c        if(nid.eq.0)write(6,*)'interp diag      :',nptot,nplow,nphigh
-
-c     call fgslib_crystal_tuple_sort    (i_cr_hndl,n
-c    $              , ipart,ni,partl,0,rpart,nr,je0,1)
-
-c     ! note that all data is local now
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+0,1),nr,
-c    &                                   ipart(je0,1)  ,ni,
-c    &                                   rpart(jr,1)   ,nr,n,
-c    &                                   vx)
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+1,1),nr,
-c    &                                   ipart(je0,1)  ,ni,
-c    &                                   rpart(jr,1)   ,nr,n,
-c    &                                   vy)
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(ju0+2,1),nr,
-c    &                                   ipart(je0,1)  ,ni,
-c    &                                   rpart(jr,1)   ,nr,n,
-c    &                                   vz)
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(jrho,1)  ,nr,
-c    &                                   ipart(je0,1)   ,ni,
-c    &                                   rpart(jr,1)    ,nr,n,
-c    &                                   vtrans)
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+0,1) ,nr,
-c    &                                   ipart(je0,1)     ,ni,
-c    &                                   rpart(jr,1)      ,nr,n,
-c    &                                   rhs_fluidp(1,1,1,1,1))
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+1,1) ,nr,
-c    &                                   ipart(je0,1)     ,ni,
-c    &                                   rpart(jr,1)      ,nr,n,
-c    &                                   rhs_fluidp(1,1,1,1,2))
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(jDuDt+2,1) ,nr,
-c    &                                   ipart(je0,1)     ,ni,
-c    &                                   rpart(jr,1)      ,nr,n,
-c    &                                   rhs_fluidp(1,1,1,1,3))
-c     call fgslib_findpts_eval_local(i_fp_hndl,rpart(jvol1,1)   ,nr,
-c    &                                   ipart(je0,1)     ,ni,
-c    &                                   rpart(jr,1)      ,nr,n,
-c    &                                   ptw(1,1,1,1,4))
-
-
-c     call move_particles_inproc
-
-         call dzlib_interp
-      endif
-
-      ! when data is non-local
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+0,1),nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)  ,ni,
-c    &                             rpart(jr,1)   ,nr,n,
-c    &                             vx)
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+1,1),nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)  ,ni,
-c    &                             rpart(jr,1)   ,nr,n,
-c    &                             vy)
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(ju0+2,1),nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)  ,ni,
-c    &                             rpart(jr,1)   ,nr,n,
-c    &                             vz)
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(jrho,1)  ,nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)   ,ni,
-c    &                             rpart(jr,1)    ,nr,n,
-c    &                             vtrans)
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+0,1) ,nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)     ,ni,
-c    &                             rpart(jr,1)      ,nr,n,
-c    &                             rhs_fluidp(1,1,1,1,1))
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+1,1) ,nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)     ,ni,
-c    &                             rpart(jr,1)      ,nr,n,
-c    &                             rhs_fluidp(1,1,1,1,2))
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(jDuDt+2,1) ,nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)     ,ni,
-c    &                             rpart(jr,1)      ,nr,n,
-c    &                             rhs_fluidp(1,1,1,1,3))
-c     call fgslib_findpts_eval(i_fp_hndl,rpart(jvol1,1)   ,nr,
-c    &                             ipart(jrc,1)  ,ni,
-c    &                             ipart(jpt,1)  ,ni,
-c    &                             ipart(je0,1)     ,ni,
-c    &                             rpart(jr,1)      ,nr,n,
-c    &                             ptw(1,1,1,1,4))
-
+c        enddo
+c        enddo
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(ju0+0,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),vx(1,1,1,ie))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(ju0+1,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),vy(1,1,1,ie))
+c        if (if3d)
+c    >   call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(ju0+2,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),vz(1,1,1,ie))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jtempf,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),t(1,1,1,ie,1))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jrho,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),vtrans(1,1,1,ie,1))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jDuDt+0,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),rhs_fluidp(1,1,1,ie,1))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jDuDt+1,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),rhs_fluidp(1,1,1,ie,2))
+c        if (if3d)
+c    >   call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jDuDt+2,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),rhs_fluidp(1,1,1,ie,3))
+c        call tri_interp(ii,jj,kk,rpart(jx,ip),rpart(jy,ip),
+c    >       rpart(jz,ip),rpart(jvol1,ip),xm1(1,1,1,ie),ym1(1,1,1,ie),
+c    >       zm1(1,1,1,ie),ptw(1,1,1,ie,4))
+c     enddo
 
       ! check if values outside reasonable bounds
-      rvfmax = 0.74
-      rvfmin = 1E-4
+      rvfmax = 0.7405
+      rvfmin = 0.0
       do i=1,n
          if (rpart(jvol1,i) .lt. rvfmin) rpart(jvol1,i) = rvfmin
          if (rpart(jvol1,i) .gt. rvfmax) rpart(jvol1,i) = rvfmax
       enddo
 
       endif
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine dzlib_interp
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      real xerange(2,3,lbmax)
-      common /lpm_elementrange/ xerange
-
-      common /myparth/ i_fp_hndl, i_cr_hndl
-
-      logical partl
-
-      integer infpts_map(llpart),nfpts1
-      common /infc_list/ nfpts1,infpts_map
-
-      ! first send grid data to bins
-
-      nxyz = lx1*ly1*lz1
-      do ie=1,neltbb
-         iee = er_maps(1,ie)
-         call copy(ptwb(1,1,1,1,ie),vx(1,1,1,iee),nxyz)
-         call copy(ptwb(1,1,1,2,ie),vy(1,1,1,iee),nxyz)
-         call copy(ptwb(1,1,1,3,ie),vz(1,1,1,iee),nxyz)
-         call copy(ptwb(1,1,1,4,ie),vtrans(1,1,1,iee,1),nxyz)
-         call copy(ptwb(1,1,1,5,ie),rhs_fluidp(1,1,1,iee,1),nxyz)
-         call copy(ptwb(1,1,1,6,ie),rhs_fluidp(1,1,1,iee,2),nxyz)
-         call copy(ptwb(1,1,1,7,ie),rhs_fluidp(1,1,1,iee,3),nxyz)
-         call copy(ptwb(1,1,1,8,ie),ptw(1,1,1,iee,4),nxyz)
-      enddo
-
-      neltbc = neltbb
-      ndum = 6*neltbc
-      call icopy(er_mapc,er_maps,ndum)
-
-      nl = 0
-      nii = 6
-      njj = 6
-      nrr = nxyz*nfldpm
-      call fgslib_crystal_tuple_transfer(i_cr_hndl,neltbc,lbmax
-     >                  , er_mapc,nii,partl,nl,ptwb,nrr,njj)
-
-
-      do i=1,n
-
-         if (infpts_map(i) .gt. 0) cycle
-         iee   = ipart(je0,i) + 1
-         nrank = ipart(jpt,i)
-
-         rrdum = 1.0
-         if(if3d) rrdum = rpart(jr+2,i)
-
-         do ie=1,neltbc
-            if (er_mapc(1,ie) .eq. iee  ) then
-            if (er_mapc(2,ie) .eq. nrank) then
-
-            call init_baryinterp(rpart(jr,i),rpart(jr+1,i),rrdum,nxyz)
-
-            call baryinterp(ptwb(1,1,1,1,ie),rpart(ju0+0,i)  ,nxyz)
-            call baryinterp(ptwb(1,1,1,2,ie),rpart(ju0+1,i)  ,nxyz)
-            call baryinterp(ptwb(1,1,1,3,ie),rpart(ju0+2,i)  ,nxyz)
-            call baryinterp(ptwb(1,1,1,4,ie),rpart(jrho,i)   ,nxyz)
-            call baryinterp(ptwb(1,1,1,5,ie),rpart(jDuDt+0,i),nxyz)
-            call baryinterp(ptwb(1,1,1,6,ie),rpart(jDuDt+1,i),nxyz)
-            call baryinterp(ptwb(1,1,1,7,ie),rpart(jDuDt+2,i),nxyz)
-            call baryinterp(ptwb(1,1,1,8,ie),rpart(jvol1,i)  ,nxyz)
-
-            endif
-            endif
-
-         enddo
-      enddo
-
-
-
-      
-
-
-
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine baryinterp(field,pofx,nxyz)
-      ! used for 3d interpolation only
-      include 'SIZE'
-      common /BARYPARAMS/ xgll, ygll, zgll, wxgll, wygll, wzgll
-      real xgll(lx1), ygll(ly1), zgll(lz1),
-     >     wxgll(lx1), wygll(ly1), wzgll(lz1)
-      common /BARRYREP/ rep, bot
-      real              rep(lx1,ly1,lz1), bot
-      real field(1),pofx,top
-
-      pofx = 0.00
-      do i=1,nxyz
-         pofx =  pofx + rep(i,1,1)*field(i)
-      enddo
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine init_baryinterp(x,y,z,nxyz)
-      ! used for 3d interpolation only
-      include 'SIZE'
-      common /BARYPARAMS/ xgll, ygll, zgll, wxgll, wygll, wzgll
-      real xgll(lx1), ygll(ly1), zgll(lz1),
-     >     wxgll(lx1), wygll(ly1), wzgll(lz1)
-      common /BARRYREP/ rep, bot
-      real              rep(lx1,ly1,lz1), bot
-
-      real x, y, z, repy, repz,repx,diff
-      real bwgtx(lx1),bwgty(ly1),bwgtz(lz1)
-
-      bot= 0.00
-      do k=1,nz1
-         diff = z - zgll(k)
-           if (abs(diff) .le. 1E-16) diff = sign(1E-16,diff)
-         bwgtz(k) = wzgll(k)/diff
-      enddo
-      do i=1,nx1
-         diff = x - xgll(i)
-           if (abs(diff) .le. 1E-16) diff = sign(1E-16,diff)
-         bwgtx(i) = wxgll(i)/diff
-      enddo 
-      do j=1,nx1
-         diff = y-ygll(j)
-           if (abs(diff) .le. 1E-16) diff = sign(1E-16,diff)
-         bwgty(j) = wygll(j)/diff
-      enddo
-
-      do k=1,nz1
-      do j=1,ny1
-         repdum = bwgty(j)*bwgtz(k)
-      do i=1,nx1
-         rep(i,j,k) =  repdum* bwgtx(i)
-         bot        =  bot + rep(i,j,k)
-      enddo
-      enddo
-      enddo 
-
-      do k=1,nz1
-      do j=1,ny1
-      do i=1,nx1
-         rep(i,j,k) =  rep(i,j,k)/bot
-      enddo
-      enddo
-      enddo
-
-      return
-      end
-c-----------------------------------------------------------------------
-      subroutine init_interpolation
-      include 'SIZE' 
-      include 'INPUT' 
- 
-      ! calculates the barycentric lagrange weights
- 
-      common /BARYPARAMS/ xgll, ygll, zgll, wxgll, wygll, wzgll
-      real xgll(lx1), ygll(ly1), zgll(lz1),
-     >     wxgll(lx1), wygll(ly1), wzgll(lz1)
-
-c     get gll points in all directions
-      call zwgll(xgll,wxgll,lx1)
-      call zwgll(ygll,wygll,ly1)
-      call rone(zgll,lz1)
-      if(if3d) call zwgll(zgll,wzgll,lz1)
-c     set all weights to ones first
-      call rone(wxgll,lx1)
-      call rone(wygll,ly1)
-      call rone(wzgll,lz1)
- 
-      ! calc x bary weights
-      do j=1,nx1
-         do k=1,nx1
-            if (j .NE. k) then
-               wxgll(j) = wxgll(j)/(xgll(j) - xgll(k))
-            endif
-         enddo
-      enddo
-      ! calc y bary weights
-      do j=1,nx1
-         do k=1,nx1
-            if (j .NE. k) then
-               wygll(j) = wygll(j)/(ygll(j) - ygll(k))
-            endif
-         enddo
-      enddo
-      ! calc z bary weights
-      if (if3d) then
-      do j=1,nx1
-         do k=1,nx1
-            if (j .NE. k) then
-               wzgll(j) = wzgll(j)/(zgll(j) - zgll(k))
-            endif
-         enddo
-      enddo
-      endif
-
-      return 
-      end
-c-----------------------------------------------------------------------
-      subroutine dzlib_nflist
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      real xerange(2,3,lbmax)
-      common /lpm_elementrange/ xerange
-
-      real rpart_nf(lr,llpart)
-      common /rpart_nfc/ rpart_nf
-      integer ipart_nf(li,llpart)
-      common /ipart_nfc/ ipart_nf
-      integer infpts_map(llpart),nfpts1
-      common /infc_list/ nfpts1,infpts_map
-
-      common /myparth/ i_fp_hndl, i_cr_hndl
-
-      nfpts1 = 0
-      do i=1,n
-         infpts_map(i) = -1
-         if (ipart(jrc,i) .eq. 2) then
-            nfpts1 = nfpts1 + 1
-            call copy(rpart_nf(1,nfpts1),rpart(1,i),nr)
-            call icopy(ipart_nf(1,nfpts1),ipart(1,i),ni)
-            infpts_map(nfpts1) = i
-         endif
-      enddo
-
-      call fgslib_findpts(i_fp_hndl !  stride     !   call fgslib_findpts( ihndl,
-     $        , ipart_nf(jrc,1),li        !   $             rcode,1,
-     $        , ipart_nf(jpt,1),li        !   &             proc,1,
-     $        , ipart_nf(je0,1),li        !   &             elid,1,
-     $        , rpart_nf(jr ,1),lr        !   &             rst,ndim,
-     $        , rpart_nf(jd ,1),lr        !   &             dist,1,
-     $        , rpart_nf(jx ,1),lr        !   &             pts(    1),1,
-     $        , rpart_nf(jy ,1),lr        !   &             pts(  n+1),1,
-     $        , rpart_nf(jz ,1),lr ,nfpts1)    !   &             pts(2*n+1),1,n)
-
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(ju0+0,1),nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)  ,ni,
-     &                             rpart_nf(jr,1)   ,nr,nfpts1,
-     &                             vx)
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(ju0+1,1),nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)  ,ni,
-     &                             rpart_nf(jr,1)   ,nr,nfpts1,
-     &                             vy)
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(ju0+2,1),nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)  ,ni,
-     &                             rpart_nf(jr,1)   ,nr,nfpts1,
-     &                             vz)
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(jrho,1)  ,nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)   ,ni,
-     &                             rpart_nf(jr,1)    ,nr,nfpts1,
-     &                             vtrans)
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(jDuDt+0,1) ,nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)     ,ni,
-     &                             rpart_nf(jr,1)      ,nr,nfpts1,
-     &                             rhs_fluidp(1,1,1,1,1))
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(jDuDt+1,1) ,nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)     ,ni,
-     &                             rpart_nf(jr,1)      ,nr,nfpts1,
-     &                             rhs_fluidp(1,1,1,1,2))
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(jDuDt+2,1) ,nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)     ,ni,
-     &                             rpart_nf(jr,1)      ,nr,nfpts1,
-     &                             rhs_fluidp(1,1,1,1,3))
-      call fgslib_findpts_eval(i_fp_hndl,rpart_nf(jvol1,1)   ,nr,
-     &                             ipart_nf(jrc,1)  ,ni,
-     &                             ipart_nf(jpt,1)  ,ni,
-     &                             ipart_nf(je0,1)     ,ni,
-     &                             rpart_nf(jr,1)      ,nr,nfpts1,
-     &                             ptw(1,1,1,1,4))
-
-      do i=1,nfpts1
-         j = infpts_map(i) 
-         call copy(rpart(1,j),rpart_nf(1,i),nr)
-         call icopy(ipart(1,j),ipart_nf(1,i),ni)
-      enddo
-
-
-      return
-      end
-c----------------------------------------------------------------------
-      subroutine dzlib_findpts
-      include 'SIZE'
-      include 'TOTAL'
-      include 'LPM'
-
-      real xerange(2,3,lbmax)
-      common /lpm_elementrange/ xerange
-
-      logical iztrue
-
-      ! must set ipart of jpt,je0 and rpart of jr,js,jt
-
-      ifnd = 0
-      do ip = 1,n
-         xloc = rpart(jx,ip)
-         yloc = rpart(jy,ip)
-         zloc = rpart(jz,ip)
-         ipart(jrc ,ip) = 2
-         do ie=1,neltb
-            iztrue = .false.
-            if (zloc.ge.xerange(1,3,ie).and.zloc.le.xerange(2,3,ie))
-     >         iztrue = .true.
-            if (.not. if3d) iztrue = .true.
-
-            if (iztrue) then
-            if (xloc.ge.xerange(1,1,ie).and.xloc.le.xerange(2,1,ie))then
-            if (yloc.ge.xerange(1,2,ie).and.yloc.le.xerange(2,2,ie))then
-                ipart(je0 ,ip) = er_map(1,ie)-1
-                ipart(jrc ,ip) = 0
-                ipart(jpt ,ip) = er_map(2,ie)
-                rpart(jd  ,ip) = 1.0 
-                rloc = -1.0 + 2.0*(xloc - xerange(1,1,ie))/
-     $                 (xerange(2,1,ie)-xerange(1,1,ie))
-                sloc = -1.0 + 2.0*(yloc - xerange(1,2,ie))/
-     $                 (xerange(2,2,ie)-xerange(1,2,ie))
-                rpart(jr  ,ip) = rloc
-                rpart(jr+1,ip) = sloc
-                if (if3d) then
-                tloc = -1.0 + 2.0*(zloc - xerange(1,3,ie))/
-     $                 (xerange(2,3,ie)-xerange(1,3,ie))
-                rpart(jr+2,ip) = tloc
-                endif
-                exit
-            endif
-            endif
-            endif
-            if (ie .eq. neltb) then
-c              ifnd = ifnd + 1
-c              rpart(jtempf,ip) = -100
-c              write(6,*) nid,xloc,yloc,zloc
-            endif
-         enddo
-      enddo
-
-c     ifnd = iglsum(ifnd,1)
-c     if (nid .eq. 0) write(6,*) 'not found',ifnd
 
       return
       end
@@ -4099,7 +2814,7 @@ c     output diagnostics to logfile
 
       return
       end
-!-----------------------------------------------------------------------
+c----------------------------------------------------------------------
       subroutine output_parallel_part
       include 'SIZE'
       include 'SOLN'
@@ -4426,11 +3141,7 @@ c     output diagnostics to logfile
       do i=1,n
          write(vtu) rpart(jx,i)
          write(vtu) rpart(jy,i)
-         if (.not. if3d) then
-            write(vtu) 0.0
-         else
-            write(vtu) rpart(jz,i)
-         endif
+         write(vtu) rpart(jz,i)
       enddo
       iint=3*wdsize*n
       write(vtu) iint
@@ -4898,8 +3609,7 @@ c----------------------------------------------------------------------
          rpart(ju3+1,i) =  rfpts(35,ii)
          rpart(ju3+2,i) =  rfpts(36,ii)
                                         
-         rpart(jdp,i)   =  dp(1)
-c        rpart(jdp,i)   =  rfpts(37,ii)
+         rpart(jdp,i)   =  rfpts(37,ii)
          rpart(jspl,i)  =  rfpts(38,ii)
          rpart(jtemp,i) =  rfpts(39,ii)
          ipart(jpid1,i) =  nint(rfpts(40,ii))
@@ -4919,6 +3629,9 @@ c        rpart(jdp,i)   =  rfpts(37,ii)
       enddo
       n = i
 
+      call update_particle_location   
+      call move_particles_inproc
+
       return
       end
 c----------------------------------------------------------------------
@@ -4935,9 +3648,6 @@ c----------------------------------------------------------------------
 
       real rfpfluid(3),rfpfluidl(3),msum,msum_tot(3,2)
 
-      common /lpm_fix/ phigdum,phigvdum
-      real phigdum(lx1,ly1,lz1,lelt,3),phigvdum(lx1,ly1,lz1,lelt)
-
       itmp = 1
       call outpost2(ptw(1,1,1,1,1),         ! fhyd_x
      >              ptw(1,1,1,1,2),         ! fhyd_y
@@ -4946,13 +3656,6 @@ c----------------------------------------------------------------------
      >              ptw(1,1,1,1,4),         ! phi_p
      >              itmp          ,        
      >              'ptw')
-      call outpost2(phigdum(1,1,1,1,1),         ! fhyd_x
-     >              phigdum(1,1,1,1,2),         ! fhyd_y
-     >              phigdum(1,1,1,1,3),         ! fhyd_z
-     >              phigvdum,         ! phi_p (but not if lx1!=lx2
-     >              phigvdum,         ! phi_p
-     >              itmp          ,        
-     >              'grd')
 
 c     eulerian integrations -----------------------------------------
 c     fluid momentum 
@@ -4961,16 +3664,17 @@ c     fluid momentum
       msum_tot(3,1) = glsc3(bm1,vtrans,vz,nx1*ny1*nz1*nelv)
 c     particle volume fraction
       vf_part_e     = glsc2(bm1,ptw(1,1,1,1,4),nx1*ny1*nz1*nelt)
+                                                 ! in z of mono-particle
+                                                 ! Dp
 c     particle forces on fluid
       rfpfluid(1)   = glsc2(bm1,ptw(1,1,1,1,1),nx1*ny1*nz1*nelt)
       rfpfluid(2)   = glsc2(bm1,ptw(1,1,1,1,2),nx1*ny1*nz1*nelt)
       rfpfluid(3)   = glsc2(bm1,ptw(1,1,1,1,3),nx1*ny1*nz1*nelt)
 
-      rdum = xdrange(2,3) - xdrange(1,3)
-      if (.not.if3d) vf_part_e   = vf_part_e*rdum   ! Here:
-      if (.not.if3d) rfpfluid(1) = rfpfluid(1)*rdum ! for 2d, assume
-      if (.not.if3d) rfpfluid(2) = rfpfluid(2)*rdum ! z thicknes 
-      if (.not.if3d) rfpfluid(3) = rfpfluid(3)*rdum 
+      if (.not.if3d) vf_part_e   = vf_part_e*dp(1)   ! Here:
+      if (.not.if3d) rfpfluid(1) = rfpfluid(1)*dp(1) ! for 2d, assume
+      if (.not.if3d) rfpfluid(2) = rfpfluid(2)*dp(1) ! z thicknes of 
+      if (.not.if3d) rfpfluid(3) = rfpfluid(3)*dp(1) ! monodisperse Dp
 
 
 c     lagrangian integrations ---------------------------------------
@@ -5019,7 +3723,6 @@ c     print properties to logfile
 c----------------------------------------------------------------------
       subroutine lpm_input_defaults
       include 'SIZE'
-c     include 'INPUT'
       include 'LPM'
 
       ! set some defaults
@@ -5071,15 +3774,6 @@ c     include 'INPUT'
 
       np_walls = 0
       nc_walls = 0
-
-      nbin_save = 0
-
-      ifrectp = 0
-
-c     zlpart = 0.0
-c     zrpart = 1.0
-c     if3d = if3d
-
 
       return
       end
@@ -5398,18 +4092,11 @@ c----------------------------------------------------------------------
          if (abs(rdum1) .lt. abs(rdum2)) rvels(i) = rdum2
       enddo
 
-      nplow = iglmin(n,1)
       nptot = iglsum(n,1)
-      nphigh = iglmax(n,1)
-
-      nplowg = iglmin(nfptsgp,1)
-      nptotg = iglsum(nfptsgp,1)
-      nphighg = iglmax(nfptsgp,1)
 
       if (nid .eq. 0) then
       write(6,*)'----- START PARTICLE DIAGNOSTICS: -----'
-      write(6,*)'NPART TOTAL      :',nptot,nplow,nphigh
-      write(6,*)'NGHOST TOTAL     :',nptotg,nplowg,nphighg
+      write(6,*)'NPART TOTAL      :',nptot
       write(6,*)'XMIN,XMAX        :',rdiags_part(1,1),rdiags_part(1,2)
       write(6,*)'YMIN,YMAX        :',rdiags_part(2,1),rdiags_part(2,2)
       write(6,*)'ZMIN,ZMAX        :',rdiags_part(3,1),rdiags_part(3,2)
@@ -5487,84 +4174,46 @@ c     integer gfirst, inoassignd, resetFindpts, pload
       nl = 0                ! No logicals exchanged
 
       if (icalld1.eq.0) then
-         call set_check_spl_params 
-
+c     if (icalld1.eq.0 .or. (resetFindpts .eq. 1)) then
          tolin = 1.e-12
          if (wdsize.eq.4) tolin = 1.e-6
          call intpts_setup  (tolin,i_fp_hndl)
          call fgslib_crystal_setup (i_cr_hndl,nekcomm,np)
-         icalld1 = icalld1 + 1
+
+c        if (resetFindpts .eq. 1) icalld1 = 0
       endif
 
-      call update_particle_location  
-      call setup_bins
+      icalld1 = icalld1 + 1
 
-      ! instead get which bin it is in
-      do i=1,n
-         ! check if particles are greater or less than binb bounds....
-         ! add below....
+      call fgslib_findpts(i_fp_hndl !  stride     !   call fgslib_findpts( ihndl,
+     $        , ipart(jrc,1),li        !   $             rcode,1,
+     $        , ipart(jpt,1),li        !   &             proc,1,
+     $        , ipart(je0,1),li        !   &             elid,1,
+     $        , rpart(jr ,1),lr        !   &             rst,ndim,
+     $        , rpart(jd ,1),lr        !   &             dist,1,
+     $        , rpart(jx ,1),lr        !   &             pts(    1),1,
+     $        , rpart(jy ,1),lr        !   &             pts(  n+1),1,
+     $        , rpart(jz ,1),lr ,n)    !   &             pts(2*n+1),1,n)
 
-         ii    = floor((rpart(jx,i)-binb(1))/rdxgp) 
-         jj    = floor((rpart(jy,i)-binb(3))/rdygp) 
-         kk    = floor((rpart(jz,i)-binb(5))/rdzgp) 
-         if (.not. if3d) kk = 0
-         if (ii .eq. ndxgp) ii = ndxgp - 1
-         if (jj .eq. ndygp) jj = ndygp - 1
-         if (kk .eq. ndzgp) kk = ndzgp - 1
-         ndum  = ii + ndxgp*jj + ndxgp*ndygp*kk
-         ndumn = ndum/nreach
-         nrank = modulo(ndumn, np)
+      nmax = iglmax(n,1)
+      if (nmax.gt.llpart) then
+         if (nid.eq.0) write(6,1) nmax,llpart
+    1    format('WARNING: Max number of particles:',
+     $   i9,'.  Not moving because llpart =',i9,'.')
+      else
+c        Move particle info to the processor that owns each particle
+c        using crystal router in log P time:
 
-         ipart(jicx,i) = ii
-         ipart(jicy,i) = jj
-         ipart(jicz,i) = kk
-         ipart(jicn,i) = ndum
-
-         ipart(jpt,i) = nrank
-      enddo
-
-      jps = jpid1-1     ! Pointer to temporary proc id for swapping
-      do i=1,n        ! Can't use jpt because it messes up particle info
-         ipart(jps,i) = ipart(jpt,i)
-      enddo
-      call fgslib_crystal_tuple_transfer(i_cr_hndl,n,llpart
-     $           , ipart,ni,partl,nl,rpart,nr,jps)
-
-
-c     if (nbin_now .ne. nbin_save) call partition_bins
-
-c     if (nbin_now .lt. np) then
-c        np_high = np
-c        np_low  = np - nbin_now +1
-c        np_low  = max(np_low,nbin_now)
-
-c        if (n .gt. 0) then
-c        do i=np_high,np_low,-1
-c           if (lpm_binsort(1,i) .eq. nid) then
-c              ii = np_high + 1 - i
-
-c              write(6,*) 'yoo',ii
-
-c              nhalf = n/2 + 1
-c              nhalf = max(nhalf,0)
-
-c              do ip =1,nhalf
-c                 ipart(jpt,ip) = lpm_binsort(1,ii)
-c              enddo
-c           endif
-c        enddo
-c        endif
-
-c        jps = jpid1-1     ! Pointer to temporary proc id for swapping
-c        do i=1,n        ! Can't use jpt because it messes up particle info
-c           ipart(jps,i) = ipart(jpt,i)
-c        enddo
-
-c        call fgslib_crystal_tuple_transfer(i_cr_hndl,n,llpart
-c    $           , ipart,ni,partl,nl,rpart,nr,jps)
-
-c     endif
-
+         jps = jpid1-1     ! Pointer to temporary proc id for swapping
+         do i=1,n        ! Can't use jpt because it messes up particle info
+            ipart(jps,i) = ipart(jpt,i)
+         enddo
+         call fgslib_crystal_tuple_transfer(i_cr_hndl,n,llpart
+     $              , ipart,ni,partl,nl,rpart,nr,jps)
+c        Sort by element number - for improved local-eval performance
+         call fgslib_crystal_tuple_sort    (i_cr_hndl,n 
+     $              , ipart,ni,partl,nl,rpart,nr,je0,1)
+      endif
 
       return
       end
@@ -5916,6 +4565,7 @@ c
             pttime(1) = pttime(1) + dnekclock() - ptdum(1)
          endif
 
+         if (nid.eq. 0) write(6,*) 'pre-sim_io time',istep,time,dt_cmt
          if(mod(istep,iostep).eq.0) then
             call lpm_usr_particles_io
          endif
@@ -5931,8 +4581,11 @@ c
                time_cmt   = time_cmt + dt_cmt
                if (abs(time_integ).eq.1)
      >            call set_tstep_coef_part(rdt_part)
-               if (nid.eq. 0) 
-     >            write(6,*) 'pre-sim_io time',istep,time,dt_cmt
+
+               ! Update coordinates if particle moves outside boundary
+               ptdum(2) = dnekclock()
+                  call update_particle_location  
+               pttime(2) = pttime(2) + dnekclock() - ptdum(2)
 
 c              ! Update where particle is stored at
                ptdum(3) = dnekclock()
@@ -5943,6 +4596,7 @@ c              ! Update where particle is stored at
                   ! Create ghost/wall particles
                   ptdum(4) = dnekclock()
                      call create_extra_particles
+                     call sort_local_particles_collisions
                   pttime(4) = pttime(4) + dnekclock() - ptdum(4)
                   
                   ! Send ghost particles
@@ -5954,16 +4608,6 @@ c              ! Update where particle is stored at
                   ptdum(6) = dnekclock()
                      call spread_props_grid
                   pttime(6) = pttime(6) + dnekclock() - ptdum(6)
-
-                  if (two_way .gt. 2) then
-                     ptdum(4) = dnekclock()
-                        call create_ghost_particles_col
-                     pttime(4) = pttime(4) + dnekclock() - ptdum(4)
-                     
-                     ptdum(5) = dnekclock()
-                        call send_ghost_particles
-                     pttime(5) = pttime(5) + dnekclock() - ptdum(5)
-                  endif
                endif
             endif
             ! Interpolate Eulerian properties to particle location
@@ -5998,6 +4642,61 @@ c              ! Update where particle is stored at
       return
       end
 c----------------------------------------------------------------------
+      subroutine sort_local_particles_collisions
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      include 'LPM'
+
+      ! here we can actually shrik rdxgp,rdygp,rdzgp if projection 
+      ! distance is larger. We only need collsion distance as dpe_max
+      ndxgpc = floor( (xdrange(2,1) - xdrange(1,1))/d2chk(3)) +1
+      ndygpc = floor( (xdrange(2,2) - xdrange(1,2))/d2chk(3))+1
+      ndzgpc = 1
+      if (if3d) ndzgpc =floor( (xdrange(2,3) - xdrange(1,3))/d2chk(3))+1
+
+      ! grid spacing for that many spacings
+      rdxgpc = (xdrange(2,1) - xdrange(1,1))/real(ndxgpc)
+      rdygpc = (xdrange(2,2) - xdrange(1,2))/real(ndygpc)
+      rdzgpc = 1.
+      if (if3d) rdzgpc = (xdrange(2,3) - xdrange(1,3))/real(ndzgpc)
+
+      ! set real particles ii,jj,kk
+      do i=1,n
+         rxval = rpart(jx,i)
+         ryval = rpart(jy,i)
+         rzval = 0.
+         if(if3d) rzval = rpart(jz,i)
+  
+         ii    = floor((rxval-xdrange(1,1))/rdxgpc) 
+         jj    = floor((ryval-xdrange(1,2))/rdygpc) 
+         kk    = floor((rzval-xdrange(1,3))/rdzgpc) 
+         ndum  = ii + ndxgp*jj + ndxgp*ndygp*kk
+
+         ipart(jicx,i) = ii
+         ipart(jicy,i) = jj
+         ipart(jicz,i) = kk
+      enddo
+      ! set ghost particles ii,jj,kk
+      do i=1,nfptsgp
+         rxval = rptsgp(jgpx,i)
+         ryval = rptsgp(jgpy,i)
+         rzval = 0.
+         if(if3d) rzval = rptsgp(jgpz,i)
+  
+         ii    = floor((rxval-xdrange(1,1))/rdxgpc) 
+         jj    = floor((ryval-xdrange(1,2))/rdygpc) 
+         kk    = floor((rzval-xdrange(1,3))/rdzgpc) 
+         ndum  = ii + ndxgp*jj + ndxgp*ndygp*kk
+
+         iptsgp(jgpicx,i) = ii
+         iptsgp(jgpicy,i) = jj
+         iptsgp(jgpicz,i) = kk
+      enddo
+
+      return
+      end
+c----------------------------------------------------------------------
       subroutine lpm_userf(ix,iy,iz,e,ffxp,ffyp,ffzp,qvolp)
       include 'SIZE'
       include 'TOTAL'
@@ -6008,7 +4707,6 @@ c----------------------------------------------------------------------
 
       real ffxp,ffyp,ffzp,qvolp
 
-
       ! particle forcing
       if (two_way .ge.2) then
          if (istep .gt. time_delay) then
@@ -6018,8 +4716,12 @@ c----------------------------------------------------------------------
      >                              /(1.-ptw(ix,iy,iz,e,4))
             ffzp =  ptw(ix,iy,iz,e,3)/vtrans(ix,iy,iz,e,1)
      >                              /(1.-ptw(ix,iy,iz,e,4))
-
-            qvolp=0.0
+            ! energy coupling for cmt-nek
+            if (icmtp .eq. 1) then
+               qvolp= ptw(ix,iy,iz,e,5) + rhs_fluidp(ix,iy,iz,e,4)
+            else
+               qvolp=0.
+            endif
          else
             ffxp = 0.0
             ffyp = 0.0
@@ -6174,6 +4876,9 @@ c
          rbeta = rpp*rbeta1 + (1.-rpp)*rbeta2
 
 
+         rpart(jfqs+j,i) = rpart(jvol,i)*rbeta/rphip    
+     >              *(rpart(ju0+j,i) - rpart(jv0+j,i))
+
          rdum = lpmvol_p*rbeta/lpmvolfrac_p
          lpmforce(1) = rdum*(lpmv_f(1) - lpmv_p(1))
          lpmforce(2) = rdum*(lpmv_f(2) - lpmv_p(2))
@@ -6204,8 +4909,7 @@ c
       if (abs(part_force(2)) .ne. 0) then
          lpmforce(1) = -lpmvol_p*lpmDuDt(1)
          lpmforce(2) = -lpmvol_p*lpmDuDt(2)
-         lpmforce(3) = 0.0
-         if (if3d) lpmforce(3) = -lpmvol_p*lpmDuDt(3)
+         lpmforce(3) = -lpmvol_p*lpmDuDt(3)
       elseif (part_force(2) .eq. 0) then
          lpmforce(1) = 0.0
          lpmforce(2) = 0.0

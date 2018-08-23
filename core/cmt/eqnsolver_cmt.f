@@ -446,38 +446,69 @@ C> @}
       
       integer e,eq_num
       parameter (ldd=lxd*lyd*lzd)
-
-      common /lpm_fix/ phigdum,phigvdum
-      real phigdum(lx1,ly1,lz1,lelt,3),phigvdum(lx1,ly1,lz1,lelt)
+c     common /ctmp1/ ur(ldd),us(ldd),ut(ldd),ju(ldd),ud(ldd),tu(ldd)
+      real ur(lx1,ly1,lz1),us(lx1,ly1,lz1),ut(lx1,ly1,lz1),
+     >    rdumz(lx1,ly1,lz1)
 
       nxyz=lx1*ly1*lz1
       if(eq_num.ne.1.and.eq_num.ne.5)then
 
+        call gradl_rst(ur(1,1,1),us(1,1,1),ut(1,1,1),
+     >                                   phig(1,1,1,e),lx1,if3d)
+        if(if3d) then ! 3d
+          if(eq_num.eq.2) then
+            do i=1,nxyz
+              rdumz(i,1,1) = 1.0d+0/JACM1(i,1,1,e)*
+     >             (ur(i,1,1)*RXM1(i,1,1,e) +
+     >              us(i,1,1)*SXM1(i,1,1,e) +
+     >              ut(i,1,1)*TXM1(i,1,1,e))
+            enddo
+          elseif(eq_num.eq.3) then
+            do i=1,nxyz
+              rdumz(i,1,1) = 1.0d+0/JACM1(i,1,1,e)*
+     >             (ur(i,1,1)*RYM1(i,1,1,e) +
+     >              us(i,1,1)*SYM1(i,1,1,e) +
+     >              ut(i,1,1)*TYM1(i,1,1,e))
+            enddo
+          elseif(eq_num.eq.4) then
+            do i=1,nxyz
+              rdumz(i,1,1) = 1.0d+0/JACM1(i,1,1,e)*
+     >             (ur(i,1,1)*RZM1(i,1,1,e) +
+     >              us(i,1,1)*SZM1(i,1,1,e) +
+     >              ut(i,1,1)*TZM1(i,1,1,e))
+            enddo
+          endif
+        else ! end 3d, 2d
+          if(eq_num.eq.2) then
+            do i=1,nxyz
+              rdumz(i,1,1) = 1.0d+0/JACM1(i,1,1,e)*
+     >             (ur(i,1,1)*RXM1(i,1,1,e) +
+     >              us(i,1,1)*SXM1(i,1,1,e))
+            enddo
+          elseif(eq_num.eq.3) then
+            do i=1,nxyz
+              rdumz(i,1,1) = 1.0d+0/JACM1(i,1,1,e)*
+     >             (ur(i,1,1)*RYM1(i,1,1,e) +
+     >              us(i,1,1)*SYM1(i,1,1,e))
+            enddo
+          endif ! end 2d
+      endif ! eqn nums 2-4
+
+c     multiply by pressure
+c     call dssum(rdumz,lx1,ly1,lz1)
+      call col2(rdumz,pr(1,1,1,e),nxyz)
 
         if (eq_num.eq.4.and.ldim.eq.2)then
 
-#ifdef LPM
-c          call subcol3(res1(1,1,1,e,eq_num),phigvdum(1,1,1,e)
-c    >                  ,bm1(1,1,1,e),nxyz)
-#endif
-
         else
-#ifdef LPM
-           call subcol3(res1(1,1,1,e,eq_num),phigdum(1,1,1,e,eq_num-1)
+           call subcol3(res1(1,1,1,e,eq_num),rdumz(1,1,1)
      >                  ,bm1(1,1,1,e),nxyz)
-#endif
            call subcol3(res1(1,1,1,e,eq_num),usrf(1,1,1,eq_num)
      $                  ,bm1(1,1,1,e),nxyz) 
         endif
       elseif(eq_num.eq.5)then
-
-#ifdef LPM
-c          call subcol3(res1(1,1,1,e,eq_num),phigvdum(1,1,1,e)
-c    >                  ,bm1(1,1,1,e),nxyz)
-#endif
-c          call subcol3(res1(1,1,1,e,eq_num),usrf(1,1,1,eq_num)
-c    $                  ,bm1(1,1,1,e),nxyz) 
-
+           call subcol3(res1(1,1,1,e,eq_num),usrf(1,1,1,eq_num)
+     $                  ,bm1(1,1,1,e),nxyz) 
       endif
       return
       end
@@ -513,7 +544,7 @@ c-----------------------------------------------------------------------
                usrf(i,j,k,2) = FFX*u(i,j,k,1,e)*phig(i,j,k,e)
                usrf(i,j,k,3) = FFY*u(i,j,k,1,e)*phig(i,j,k,e)
                usrf(i,j,k,4) = FFZ*u(i,j,k,1,e)*phig(i,j,k,e)
-               usrf(i,j,k,5) = 0.0
+               usrf(i,j,k,5) = rdum4
 c              usrf(i,j,k,5) = (U(i,j,k,2,e)*FFX + U(i,j,k,3,e)*FFY
 c    &                       +  U(i,j,k,4,e)*FFZ)/ U(i,j,k,1,e)
             enddo
