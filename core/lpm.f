@@ -58,6 +58,7 @@ c     call read_particle_input_par ! for lb code since no par file
       call interp_props_part_location 
 
       if (time_integ .lt. 0) call pre_sim_collisions ! e.g., settling p
+
    
 c     resetFindpts = 0
 c     call computeRatio
@@ -245,6 +246,11 @@ c           set global particle id (3 part tag)
             rpart(jx1+2,i) = 1.
             rpart(jx2+2,i) = 1.
             rpart(jx3+2,i) = 1.
+
+            rpart(ju0+2,i) = 0.0
+            rpart(ju1+2,i) = 0.0
+            rpart(ju2+2,i) = 0.0
+            rpart(ju3+2,i) = 0.0
          enddo
       endif
 
@@ -359,55 +365,52 @@ c----------------------------------------------------------------------
       integer icalld
       save    icalld
       data    icalld  /-1/
+
+      if (istep .gt. 1 .or. time_integ .lt. 0) then
+         icalld = icalld + 1
+c        if (icalld .le. 20) then
+            rdpe_max = 0.
+            rdpe_min = 100.
+            do i=1,n
+               if (rpart(jrpe,i).lt.rdpe_min) rdpe_min = rpart(jrpe,i)
+               if (rpart(jrpe,i).gt.rdpe_max) rdpe_max = rpart(jrpe,i)
+            enddo
+            rdpe_min = glmin(rdpe_min,1)
+            rdpe_max = glmax(rdpe_max,1)
+            rdpe_min = 2.*rdpe_min ! to get diameter
+            rdpe_max = 2.*rdpe_max ! to get diameter
+c        endif
+
+c       ! particle cfl, particles cant move due to velocity
+        dt_dum = rdt_part
+        dt_part = 1000.
+        cflp = 0.10
+        do i=1,n
+           rvmag  = sqrt(rpart(jv0,i)**2 + rpart(jv0+1,i)**2 
+     >                   + rpart(jv0+2,i)**2)
+        
+           cflt = dt_dum*rvmag/rdpe_min
+           if (cflt .lt. cflp) dt_part = dt_dum
+           if (cflt .ge. cflp) dt_part = cflp*rdpe_min/rvmag ! make sure smallest small overlap
+        enddo
+        dt_part  = glmin(dt_part,1)
+        rdt_part = min(dt_dum,dt_part)
+        if (dt_part .le. 1E-14) rdt_part = dt_dum
+
+   
+         if (two_way .gt. 2) then
+            ! resolving collisions
+            rm1      = rho_p*pi/6.*rdpe_min**3 ! max
+            rm2      = rho_p*pi/6.*rdpe_max**3 ! max
+            rm12     = 1./(1./rm1 + 1./rm2)
+            n_resolve= 10
+            dt_col   = sqrt(rm12/ksp*(log(e_rest)**2+pi**2))/n_resolve
+            rdt_part = min(rdt_part,dt_col)
+         endif
+
+      endif
+
       
-      if (llpart .eq. 1) goto 1234
-
-      icalld = icalld + 1
-      if (icalld .eq. 0) then
-         rdpe_max = 0.
-         rdpe_min = 100.
-         do i=1,n
-            if (rpart(jrpe,i).lt.rdpe_min) rdpe_min = rpart(jrpe,i)
-            if (rpart(jrpe,i).gt.rdpe_max) rdpe_max = rpart(jrpe,i)
-         enddo
-         rdpe_min = glmin(rdpe_min,1)
-         rdpe_max = glmax(rdpe_max,1)
-         rdpe_min = 2.*rdpe_min ! to get diameter
-         rdpe_max = 2.*rdpe_max ! to get diameter
-      endif
-
-c     ! particle cfl, particles cant move due to velocity
-      dt_dum = rdt_part
-      dt_part = 1000.
-      cflp = 0.10
-      rvmag_max = 0.
-      do i=1,n
-         rvmag  = sqrt(rpart(jv0,i)**2 + rpart(jv0+1,i)**2 
-     >                 + rpart(jv0+2,i)**2)
-
-         cflt = dt_dum*rvmag/rdpe_min
-         if (cflt .lt. cflp) dt_part = dt_dum
-         if (cflt .ge. cflp) dt_part = cflp*rdpe_min/rvmag ! make sure smallest small overlap
-
-         if (rvmag .gt. rvmag_max) rvmag_max = rvmag
-      enddo
-      rvmag_max = glmax(rvmag_max,1)
-      dt_part  = glmin(dt_part,1)
-
-      ! resolving collisions
-      rm1      = rho_p*pi/6.*rdpe_min**3 ! max
-      rm2      = rho_p*pi/6.*rdpe_max**3 ! max
-      rm12     = 1./(1./rm1 + 1./rm2)
-      n_resolve= 10
-      dt_col   = sqrt(rm12/ksp*(log(e_rest)**2+pi**2))/n_resolve
-
-      if (two_way .gt. 2) then
-         rdt_part = min(dt_part,dt_col)
-      else
-         rdt_part = dt_part ! don't set if no collisions!
-      endif
-
- 1234 continue
 
       return
       end
@@ -570,6 +573,7 @@ c     should we inject particles at this time step?
       endif
       endif
 
+
       if (istep .gt. time_delay) then
 
       if (stage.eq.1) then
@@ -616,6 +620,7 @@ c     should we inject particles at this time step?
          call usr_particles_forcing  
       pttime(8) = pttime(8) + dnekclock() - ptdum(8)
 
+
       ! Integrate in time
       ptdum(9) = dnekclock()
          if (abs(time_integ) .eq. 1) call rk3_integrate
@@ -654,6 +659,10 @@ c
      >       ,rxyzp(n_walls*2,3)
       integer e
 
+      common /lpm_fix/ phigdum,phigvdum
+      real phigdum(lx1,ly1,lz1,lelt,3),phigvdum(lx1,ly1,lz1,lelt)
+
+      nxyz   =nx1*ny1*nz1
       nlxyze = lx1*ly1*lz1*lelt
       nxyze  = nx1*ny1*nz1*nelt
       call rzero(ptw,nlxyze*8)
@@ -831,13 +840,37 @@ c
 
 #ifdef CMTNEK
       ! filtering makes velocity field smoother for p*grad(phig) in CMT
-      wght = 1.0
+
+c     call dsavg(ptw(1,1,1,1,1))
+c     call dsavg(ptw(1,1,1,1,2))
+c     call dsavg(ptw(1,1,1,1,3))
+c     call dsavg(ptw(1,1,1,1,4))
+c     call dsavg(ptw(1,1,1,1,5))
+c     call dsavg(ptw(1,1,1,1,6))
+c     call dsavg(ptw(1,1,1,1,7))
+
+      wght = 1
       ncut = 1
+      call filter_s0(ptw(1,1,1,1,1),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,2),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,3),wght,ncut,'phip') 
       call filter_s0(ptw(1,1,1,1,4),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,5),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,6),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,7),wght,ncut,'phip') 
+      call filter_s0(ptw(1,1,1,1,8),wght,ncut,'phip') 
+
+c     call dsavg(ptw(1,1,1,1,1))
+c     call dsavg(ptw(1,1,1,1,2))
+c     call dsavg(ptw(1,1,1,1,3))
+c     call dsavg(ptw(1,1,1,1,4))
+c     call dsavg(ptw(1,1,1,1,5))
+c     call dsavg(ptw(1,1,1,1,6))
+c     call dsavg(ptw(1,1,1,1,7))
 #endif
 
       rvfmax = 0.7405
-      rvfmin = 0.0
+      rvfmin = 1E-15
       do ie=1,nelt
       do k=1,nz1
       do j=1,ny1
@@ -849,6 +882,46 @@ c
       enddo
       enddo
       enddo
+
+      nxyze = nxyz*nelt
+
+      call gradm1(phigdum(1,1,1,1,1),
+     >            phigdum(1,1,1,1,2),
+     >            phigdum(1,1,1,1,3),
+     >            phig)
+
+
+      call col2(phigdum(1,1,1,1,1),pr,nxyze)
+      call col2(phigdum(1,1,1,1,2),pr,nxyze)
+      if(if3d) call col2(phigdum(1,1,1,1,3),pr,nxyze)
+
+c     call dsavg(phigdum(1,1,1,1,1))
+c     call dsavg(phigdum(1,1,1,1,2))
+c     call dsavg(phigdum(1,1,1,1,3))
+
+c     nspread = 6
+c     rle = 5.94E-4
+c     rgrad_max = 101325/(nspread*rle)
+
+c     do i=1,nxyze
+c        if (abs(phigdum(i,1,1,1,2)) .lt. rgrad_max) then
+c           if (phigdum(i,1,1,1,2) .lt. 0)
+c    >         phigdum(i,1,1,1,2) = - rgrad_max
+c           if (phigdum(i,1,1,1,2) .gt. 0)
+c    >         phigdum(i,1,1,1,2) = rgrad_max
+c        endif
+c     enddo
+
+
+      call opdiv(phigvdum,ptw(1,1,1,1,5),
+     >                    ptw(1,1,1,1,6),
+     >                    ptw(1,1,1,1,7))
+
+
+      call col2(phigvdum,pr,nxyze)
+      call chsign(phigvdum,nxyze)
+
+c     call dsavg(phigvdum)
 
       return
       end
@@ -2773,7 +2846,7 @@ c     enddo
 
       ! check if values outside reasonable bounds
       rvfmax = 0.7405
-      rvfmin = 0.0
+      rvfmin = 1E-4
       do i=1,n
          if (rpart(jvol1,i) .lt. rvfmin) rpart(jvol1,i) = rvfmin
          if (rpart(jvol1,i) .gt. rvfmax) rpart(jvol1,i) = rvfmax
@@ -3598,7 +3671,7 @@ c----------------------------------------------------------------------
                                         
          rpart(ju0,i)   =  rfpts(25,ii)
          rpart(ju0+1,i) =  rfpts(26,ii)
-         rpart(ju0+2,i) =  rfpts(27,ii)
+         rpart(ju0+2,i) =  rfpts(27,ii) 
          rpart(ju1+0,i) =  rfpts(28,ii)
          rpart(ju1+1,i) =  rfpts(29,ii)
          rpart(ju1+2,i) =  rfpts(30,ii)
@@ -3623,9 +3696,6 @@ c----------------------------------------------------------------------
          rpart(jgam,i)  = 1.          ! initial integration correction
          rpart(jrpe,i) = rpart(jspl,i)**(1./3.)*rpart(jdp,i)/2.
 
-         call get_part_use_block(i,0)
-         call lpm_usr_f  ! can overwrite particle properties at init
-         call get_part_use_block(i,1)
       enddo
       n = i
 
@@ -4565,7 +4635,6 @@ c
             pttime(1) = pttime(1) + dnekclock() - ptdum(1)
          endif
 
-         if (nid.eq. 0) write(6,*) 'pre-sim_io time',istep,time,dt_cmt
          if(mod(istep,iostep).eq.0) then
             call lpm_usr_particles_io
          endif
@@ -4581,6 +4650,8 @@ c
                time_cmt   = time_cmt + dt_cmt
                if (abs(time_integ).eq.1)
      >            call set_tstep_coef_part(rdt_part)
+               if (nid.eq. 0) 
+     >            write(6,*) 'pre-sim_io time',istep,time,dt_cmt
 
                ! Update coordinates if particle moves outside boundary
                ptdum(2) = dnekclock()
@@ -4716,12 +4787,8 @@ c----------------------------------------------------------------------
      >                              /(1.-ptw(ix,iy,iz,e,4))
             ffzp =  ptw(ix,iy,iz,e,3)/vtrans(ix,iy,iz,e,1)
      >                              /(1.-ptw(ix,iy,iz,e,4))
-            ! energy coupling for cmt-nek
-            if (icmtp .eq. 1) then
-               qvolp= ptw(ix,iy,iz,e,5) + rhs_fluidp(ix,iy,iz,e,4)
-            else
-               qvolp=0.
-            endif
+
+            qvolp=0.
          else
             ffxp = 0.0
             ffyp = 0.0

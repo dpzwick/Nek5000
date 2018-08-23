@@ -45,6 +45,10 @@ c     Solve the Euler equations
          call entropy_viscosity      ! for high diffno
          call compute_transport_props! at t=0
 
+#ifdef LPM
+         call spread_props_grid           
+#endif
+
       endif
 
       nstage = 3

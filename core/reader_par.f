@@ -1043,7 +1043,7 @@ C
 #ifdef LPM
       call bcast(rxbo , 6*wdsize)
       call bcast(rxco , 9*wdsize)
-      call bcast(binb , 6*wdsize)
+c     call bcast(binb , 6*wdsize)
       call bcast(dp , 2*wdsize)
       call bcast(dp_std , wdsize)
       call bcast(tp_0 , wdsize)
