@@ -3701,7 +3701,7 @@ c----------------------------------------------------------------------
       character*10 filename
 
       ntotal = iglsum(n,1)
-      if (ntotal .gt. ntotal) return
+      if (ntotal .gt. nw) return
 
 ! ------------------------------
 ! LOAD TOTAL NUMBER OF PARTICLES
