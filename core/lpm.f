@@ -229,13 +229,16 @@ c           set global particle id (3 part tag)
             ipart(jpid3,n) = icalld
          enddo
 
-      else
+      elseif (ipart_restartr .gt. 0) then
          ! read in data
          nread_part = 1
          do j=1,nread_part
             call read_parallel_restart_part
          enddo
 
+      elseif (ipart_restartr .lt. 0) then
+
+         call read_ascii_restart_part
       endif
 
 
@@ -552,38 +555,18 @@ c
       integer              stage,nstage
       common /tstepstage/ stage,nstage
 
-      logical ifinject
-      integer icalld
-      save    icalld
-      data    icalld  /-1/
-
-      if (icalld .eq. -1) then
-         pttime(1) = 0.
-      else
-         pttime(1) = pttime(1) + dnekclock() - ptdum(1)
-      endif
-
-      icalld = icalld + 1
-
-c     should we inject particles at this time step?
-      ifinject = .false.
-      if (inject_rate .gt. 0) then
-      if ((mod(istep,inject_rate).eq.0)) then 
-         ifinject = .true. 
-      endif
-      endif
-
-
       if (istep .gt. time_delay) then
 
       if (stage.eq.1) then
+
+         if ( modulo(istep,inject_rate) .eq. 0) then
+             call place_particles
+         endif
+
          ! Update coordinates if particle moves outside boundary
          ptdum(2) = dnekclock()
             call update_particle_location  
          pttime(2) = pttime(2) + dnekclock() - ptdum(2)
-
-         ! Inject particles if needed
-         if (ifinject) call place_particles
 
          ! Update where particle is stored at
          ptdum(3) = dnekclock()
@@ -633,8 +616,6 @@ c     should we inject particles at this time step?
       pttime(10) = pttime(10) + dnekclock() - ptdum(10)
 
       endif ! time_delay
-
-      ptdum(1) = dnekclock()
 
       return
       end
@@ -3214,7 +3195,11 @@ c----------------------------------------------------------------------
       do i=1,n
          write(vtu) rpart(jx,i)
          write(vtu) rpart(jy,i)
-         write(vtu) rpart(jz,i)
+         if (if3d) then
+            write(vtu) rpart(jz,i)
+         else
+            write(vtu) 0.0
+         endif
       enddo
       iint=3*wdsize*n
       write(vtu) iint
@@ -3698,6 +3683,74 @@ c----------------------------------------------------------------------
 
       enddo
       n = i
+
+      call update_particle_location   
+      call move_particles_inproc
+
+      return
+      end
+c----------------------------------------------------------------------
+      subroutine read_ascii_restart_part
+      include 'SIZE'
+      include 'TOTAL'
+      include 'LPM'
+
+      common /myparth/ i_fp_hndl, i_cr_hndl
+      common /nekmpi/ mid,mp,nekcomm,nekgroup,nekreal
+
+      character*10 filename
+
+! ------------------------------
+! LOAD TOTAL NUMBER OF PARTICLES
+! ------------------------------
+      write(filename,'(A5,I5.5)') 'rpart', abs(ipart_restartr)
+      if (nid .eq. 0) then
+         iread = 753
+         open(unit=iread,file=filename,action='read',status='old')
+         read(iread,*) ndum
+         ndum1 = abs(ndum)
+         do i=1,ndum1
+            n = n + 1
+            if (ndum .gt. 0) then
+               read(iread,*) rpart(jx,n),rpart(jy,n),rpart(jz,n)
+     >                   ,rpart(jv0+0,n), rpart(jv0+1,n), rpart(jv0+2,n)
+
+               if (dp_std .gt. 0) then
+                  rpart(jdp,n) = unif_random_norm(dp(1),dp_std)
+               else
+                  rpart(jdp,n) = unif_random(dp(1),dp(2))
+               endif
+               rpart(jtaup,n) = rpart(jdp,n)**2*rho_p/18.0d+0/mu_0
+               rpart(jrhop,n) = rho_p
+               rpart(jvol,n)  = pi*rpart(jdp,n)**3/6.
+               rpart(jspl,n)  = rspl
+               rpart(jrpe,n)  = rpart(jspl,n)**(1./3.)*rpart(jdp,n)/2.
+               rpart(jvol,n)  = rpart(jspl,n)*rpart(jvol,n)
+
+               rpart(jtemp,n)  = tp_0
+               rpart(jtempf,n) = tp_0
+               rpart(jrho,n)   = param(1)
+
+               ipart(jpid1,n) = nid
+               ipart(jpid2,n) = i
+               ipart(jpid3,n) = istep
+
+            endif
+            if (ndum .lt. 0) then
+               read(iread,*) rpart(jx,n),rpart(jy,n),rpart(jz,n)
+     >                   ,rpart(jv0+0,n), rpart(jv0+1,n), rpart(jv0+2,n)
+     >                   ,rpart(jdp,n), rpart(jspl,n), rpart(jtemp,n)
+     >                   ,ipart(jpid1,n), ipart(jpid2,n), ipart(jpid3,n)
+
+               rpart(jtaup,n) = rpart(jdp,n)**2*rho_p/18.0d+0/mu_0
+               rpart(jrhop,n) = rho_p
+               rpart(jvol,n)  = rpart(jspl,n)*pi*rpart(jdp,n)**3/6.d+0
+               rpart(jgam,n)  = 1.
+               rpart(jrpe,n)  = rpart(jspl,n)**(1./3.)*rpart(jdp,n)/2.
+            endif
+         enddo
+         close(iread)
+      endif
 
       call update_particle_location   
       call move_particles_inproc
@@ -4619,23 +4672,13 @@ c
       real                  tcoef(3,3),dt_cmt,time_cmt
       common /timestepcoef/ tcoef,dt_cmt,time_cmt
 
-      nmax_step = nsteps  ! number of pre-iteration steps
-      ninj_step = 3000
-
       nstage_part = 3
       if (abs(time_integ) .eq. 2) nstage_part = 1
 
       ! pre simulation iteration for packed bed
-      do istep=0,nmax_step
+      do istep=0,nsteps
 
-         if (istep.eq.0) then
-            time = 0
-            pttime(1) = 0.
-         else
-            pttime(1) = pttime(1) + dnekclock() - ptdum(1)
-         endif
-
-         if(mod(istep,iostep).eq.0) then
+         if(modulo(istep,iostep).eq.0) then
             call lpm_usr_particles_io
          endif
 
@@ -4652,59 +4695,12 @@ c
      >            call set_tstep_coef_part(rdt_part)
                if (nid.eq. 0) 
      >            write(6,*) 'pre-sim_io time',istep,time,dt_cmt
-
-               ! Update coordinates if particle moves outside boundary
-               ptdum(2) = dnekclock()
-                  call update_particle_location  
-               pttime(2) = pttime(2) + dnekclock() - ptdum(2)
-
-c              ! Update where particle is stored at
-               ptdum(3) = dnekclock()
-                  call move_particles_inproc
-               pttime(3) = pttime(3) + dnekclock() - ptdum(3)
-
-               if (two_way.gt.1) then
-                  ! Create ghost/wall particles
-                  ptdum(4) = dnekclock()
-                     call create_extra_particles
-                     call sort_local_particles_collisions
-                  pttime(4) = pttime(4) + dnekclock() - ptdum(4)
-                  
-                  ! Send ghost particles
-                  ptdum(5) = dnekclock()
-                     call send_ghost_particles
-                  pttime(5) = pttime(5) + dnekclock() - ptdum(5)
-                  
-                  ! Projection to Eulerian grid
-                  ptdum(6) = dnekclock()
-                     call spread_props_grid
-                  pttime(6) = pttime(6) + dnekclock() - ptdum(6)
-               endif
             endif
-            ! Interpolate Eulerian properties to particle location
-            ptdum(7) = dnekclock()
-               call interp_props_part_location
-            pttime(7) = pttime(7) + dnekclock() - ptdum(7)
 
-            ! Evaluate particle force models
-            ptdum(8) = dnekclock()
-               call usr_particles_forcing  
-            pttime(8) = pttime(8) + dnekclock() - ptdum(8)
-   
-            ! Integrate in time
-            ptdum(9) = dnekclock()
-               if (abs(time_integ) .eq. 1) call rk3_integrate
-               if (abs(time_integ) .eq. 2) call bdf_integrate
-            pttime(9) = pttime(9) + dnekclock() - ptdum(9)
-   
-            ! Update forces
-            ptdum(10) = dnekclock()
-               call compute_forcing_post_part
-            pttime(10) = pttime(10) + dnekclock() - ptdum(10)
+            call lpm_usr_particles_solver
 
          enddo
 
-         ptdum(1) = dnekclock()
       enddo
 
       if (nid.eq.0) write(6,*) 'FINISHED PRE COLLISIONS - EXITING NOW'
