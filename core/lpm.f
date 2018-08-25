@@ -3700,6 +3700,9 @@ c----------------------------------------------------------------------
 
       character*10 filename
 
+      real unif_random
+      external unif_random
+
       ntotal = iglsum(n,1)
       if (ntotal .gt. nw) return
 
@@ -3751,6 +3754,14 @@ c----------------------------------------------------------------------
                rpart(jgam,n)  = 1.
                rpart(jrpe,n)  = rpart(jspl,n)**(1./3.)*rpart(jdp,n)/2.
             endif
+            rfac = 1E-3
+            rfac = rfac*rpart(jrpe,n)
+            rdum = unif_random(-rfac,rfac)
+            rpart(jx,n) = rpart(jx,n) + rdum
+            rdum = unif_random(-rfac,rfac)
+            rpart(jy,n) = rpart(jy,n) + rdum
+            rdum = unif_random(-rfac,rfac)
+            rpart(jz,n) = rpart(jz,n) + rdum
          enddo
          close(iread)
       endif
