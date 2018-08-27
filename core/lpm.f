@@ -41,8 +41,11 @@ c     integer gfirst, inoassignd, resetFindpts, pload
 
       icmtp = idum
 
+      ! for 2d cases
+      zlpart   = 0.0
+      zrpart   = dp(1)
+
       call set_part_pointers
-c     call read_particle_input_par ! for lb code since no par file
       call set_bounds_box
       call set_part_params 
       call place_particles
@@ -58,7 +61,6 @@ c     call read_particle_input_par ! for lb code since no par file
       call interp_props_part_location 
 
       if (time_integ .lt. 0) call pre_sim_collisions ! e.g., settling p
-
    
 c     resetFindpts = 0
 c     call computeRatio
@@ -277,6 +279,11 @@ c     integer gfirst, inoassignd, resetFindpts, pload
 c     if((istep.eq.0) .or. (istep.eq.1).or.(resetFindpts.eq.1)) then 
         call domain_size(xdrange(1,1),xdrange(2,1),xdrange(1,2)
      $                  ,xdrange(2,2),xdrange(1,3),xdrange(2,3))
+
+       if (.not. if3d) then
+          xdrange(1,3) = zlpart
+          xdrange(2,3) = zrpart
+       endif
       endif
 
       return
@@ -410,7 +417,6 @@ c       ! particle cfl, particles cant move due to velocity
             dt_col   = sqrt(rm12/ksp*(log(e_rest)**2+pi**2))/n_resolve
             rdt_part = min(rdt_part,dt_col)
          endif
-
       endif
 
       
@@ -559,7 +565,7 @@ c
 
       if (stage.eq.1) then
 
-         if ( inject_rate .gt. 0) then
+         if (inject_rate .gt. 0) then
             if ( modulo(istep,inject_rate) .eq. 0) call place_particles
          endif
 
@@ -602,7 +608,6 @@ c
       ptdum(8) = dnekclock()
          call usr_particles_forcing  
       pttime(8) = pttime(8) + dnekclock() - ptdum(8)
-
 
       ! Integrate in time
       ptdum(9) = dnekclock()
@@ -3195,10 +3200,10 @@ c----------------------------------------------------------------------
       do i=1,n
          write(vtu) rpart(jx,i)
          write(vtu) rpart(jy,i)
-         if (if3d) then
-            write(vtu) rpart(jz,i)
-         else
+         if (.not. if3d) then
             write(vtu) 0.0
+         else
+            write(vtu) rpart(jz,i)
          endif
       enddo
       iint=3*wdsize*n
@@ -3656,7 +3661,7 @@ c----------------------------------------------------------------------
                                         
          rpart(ju0,i)   =  rfpts(25,ii)
          rpart(ju0+1,i) =  rfpts(26,ii)
-         rpart(ju0+2,i) =  rfpts(27,ii) 
+         rpart(ju0+2,i) =  rfpts(27,ii)
          rpart(ju1+0,i) =  rfpts(28,ii)
          rpart(ju1+1,i) =  rfpts(29,ii)
          rpart(ju1+2,i) =  rfpts(30,ii)
@@ -3698,17 +3703,14 @@ c----------------------------------------------------------------------
       common /myparth/ i_fp_hndl, i_cr_hndl
       common /nekmpi/ mid,mp,nekcomm,nekgroup,nekreal
 
-      character*10 filename
-
       real unif_random
       external unif_random
+
+      character*10 filename
 
       ntotal = iglsum(n,1)
       if (ntotal .gt. nw) return
 
-! ------------------------------
-! LOAD TOTAL NUMBER OF PARTICLES
-! ------------------------------
       write(filename,'(A5,I5.5)') 'rpart', abs(ipart_restartr)
       if (nid .eq. 0) then
          iread = 753
@@ -3754,14 +3756,22 @@ c----------------------------------------------------------------------
                rpart(jgam,n)  = 1.
                rpart(jrpe,n)  = rpart(jspl,n)**(1./3.)*rpart(jdp,n)/2.
             endif
-            rfac = 1E-3
-            rfac = rfac*rpart(jrpe,n)
-            rdum = unif_random(-rfac,rfac)
-            rpart(jx,n) = rpart(jx,n) + rdum
-            rdum = unif_random(-rfac,rfac)
-            rpart(jy,n) = rpart(jy,n) + rdum
-            rdum = unif_random(-rfac,rfac)
-            rpart(jz,n) = rpart(jz,n) + rdum
+
+            rfluc = 1E-2
+            rfluc = rfluc*rpart(jrpe,n)
+            rpart(jx,n) = rpart(jx,n) + unif_random(-rfluc,rfluc)
+            rpart(jy,n) = rpart(jy,n) + unif_random(-rfluc,rfluc)
+            rpart(jz,n) = rpart(jz,n) + unif_random(-rfluc,rfluc)
+
+            do j=0,2
+               rpart(jx1+j,n) = rpart(jx+j,n)
+               rpart(jx2+j,n) = rpart(jx+j,n)
+               rpart(jx3+j,n) = rpart(jx+j,n)
+               rpart(jv1+j,n) = rpart(jv0+j,n)
+               rpart(jv2+j,n) = rpart(jv0+j,n)
+               rpart(jv3+j,n) = rpart(jv0+j,n)
+            enddo
+
          enddo
          close(iread)
       endif
@@ -3801,17 +3811,16 @@ c     fluid momentum
       msum_tot(3,1) = glsc3(bm1,vtrans,vz,nx1*ny1*nz1*nelv)
 c     particle volume fraction
       vf_part_e     = glsc2(bm1,ptw(1,1,1,1,4),nx1*ny1*nz1*nelt)
-                                                 ! in z of mono-particle
-                                                 ! Dp
 c     particle forces on fluid
       rfpfluid(1)   = glsc2(bm1,ptw(1,1,1,1,1),nx1*ny1*nz1*nelt)
       rfpfluid(2)   = glsc2(bm1,ptw(1,1,1,1,2),nx1*ny1*nz1*nelt)
       rfpfluid(3)   = glsc2(bm1,ptw(1,1,1,1,3),nx1*ny1*nz1*nelt)
 
-      if (.not.if3d) vf_part_e   = vf_part_e*dp(1)   ! Here:
-      if (.not.if3d) rfpfluid(1) = rfpfluid(1)*dp(1) ! for 2d, assume
-      if (.not.if3d) rfpfluid(2) = rfpfluid(2)*dp(1) ! z thicknes of 
-      if (.not.if3d) rfpfluid(3) = rfpfluid(3)*dp(1) ! monodisperse Dp
+      rdum = xdrange(2,3) - xdrange(1,3)
+      if (.not.if3d) vf_part_e   = vf_part_e*rdum   ! Here:
+      if (.not.if3d) rfpfluid(1) = rfpfluid(1)*rdum ! for 2d, assume
+      if (.not.if3d) rfpfluid(2) = rfpfluid(2)*rdum ! z thicknes 
+      if (.not.if3d) rfpfluid(3) = rfpfluid(3)*rdum 
 
 
 c     lagrangian integrations ---------------------------------------
@@ -3911,6 +3920,15 @@ c----------------------------------------------------------------------
 
       np_walls = 0
       nc_walls = 0
+
+      nbin_save = 0
+
+      ifrectp = 0
+
+c     zlpart = 0.0
+c     zrpart = 1.0
+c     if3d = if3d
+
 
       return
       end
@@ -4229,11 +4247,18 @@ c----------------------------------------------------------------------
          if (abs(rdum1) .lt. abs(rdum2)) rvels(i) = rdum2
       enddo
 
+      nplow = iglmin(n,1)
       nptot = iglsum(n,1)
+      nphigh = iglmax(n,1)
+
+      nplowg = iglmin(nfptsgp,1)
+      nptotg = iglsum(nfptsgp,1)
+      nphighg = iglmax(nfptsgp,1)
 
       if (nid .eq. 0) then
       write(6,*)'----- START PARTICLE DIAGNOSTICS: -----'
-      write(6,*)'NPART TOTAL      :',nptot
+      write(6,*)'NPART TOTAL      :',nptot,nplow,nphigh
+      write(6,*)'NGHOST TOTAL     :',nptotg,nplowg,nphighg
       write(6,*)'XMIN,XMAX        :',rdiags_part(1,1),rdiags_part(1,2)
       write(6,*)'YMIN,YMAX        :',rdiags_part(2,1),rdiags_part(2,2)
       write(6,*)'ZMIN,ZMAX        :',rdiags_part(3,1),rdiags_part(3,2)
@@ -4311,13 +4336,11 @@ c     integer gfirst, inoassignd, resetFindpts, pload
       nl = 0                ! No logicals exchanged
 
       if (icalld1.eq.0) then
-c     if (icalld1.eq.0 .or. (resetFindpts .eq. 1)) then
          tolin = 1.e-12
          if (wdsize.eq.4) tolin = 1.e-6
          call intpts_setup  (tolin,i_fp_hndl)
          call fgslib_crystal_setup (i_cr_hndl,nekcomm,np)
 
-c        if (resetFindpts .eq. 1) icalld1 = 0
       endif
 
       icalld1 = icalld1 + 1
@@ -4798,7 +4821,7 @@ c----------------------------------------------------------------------
             ffzp =  ptw(ix,iy,iz,e,3)/vtrans(ix,iy,iz,e,1)
      >                              /(1.-ptw(ix,iy,iz,e,4))
 
-            qvolp=0.
+            qvolp=0.0
          else
             ffxp = 0.0
             ffyp = 0.0
@@ -4953,9 +4976,6 @@ c
          rbeta = rpp*rbeta1 + (1.-rpp)*rbeta2
 
 
-         rpart(jfqs+j,i) = rpart(jvol,i)*rbeta/rphip    
-     >              *(rpart(ju0+j,i) - rpart(jv0+j,i))
-
          rdum = lpmvol_p*rbeta/lpmvolfrac_p
          lpmforce(1) = rdum*(lpmv_f(1) - lpmv_p(1))
          lpmforce(2) = rdum*(lpmv_f(2) - lpmv_p(2))
@@ -4986,7 +5006,8 @@ c
       if (abs(part_force(2)) .ne. 0) then
          lpmforce(1) = -lpmvol_p*lpmDuDt(1)
          lpmforce(2) = -lpmvol_p*lpmDuDt(2)
-         lpmforce(3) = -lpmvol_p*lpmDuDt(3)
+         lpmforce(3) = 0.0
+         if (if3d) lpmforce(3) = -lpmvol_p*lpmDuDt(3)
       elseif (part_force(2) .eq. 0) then
          lpmforce(1) = 0.0
          lpmforce(2) = 0.0
