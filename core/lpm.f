@@ -4288,7 +4288,7 @@ c----------------------------------------------------------------------
       do i = 1,iptlen
          rdum      = pttime(i)/istep
          dtime_max = glmax(rdum,1)
-         dtime_min = glmax(rdum,1)
+         dtime_min = glmin(rdum,1)
          if(nid.eq.0)  write(6,*) 'TIMER #:',i,dtime_min,dtime_max
       enddo
 
