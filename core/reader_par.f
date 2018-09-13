@@ -857,12 +857,6 @@ c set particle options
          read(initc(i),*) d_out
          rxco(i) = d_out
       enddo
-      call finiparser_findTokens('particle:binb',',',ifnd)
-      do i = 1,min(ifnd,15)
-         call finiparser_getToken(initc(i),i)
-         read(initc(i),*) d_out
-         binb(i) = d_out
-      enddo
 
       call finiparser_getDbl(d_out,'particle:diameter',ifnd)
       if(ifnd .eq. 1) then
@@ -1043,7 +1037,6 @@ C
 #ifdef LPM
       call bcast(rxbo , 6*wdsize)
       call bcast(rxco , 9*wdsize)
-      call bcast(binb , 6*wdsize)
       call bcast(dp , 2*wdsize)
       call bcast(dp_std , wdsize)
       call bcast(tp_0 , wdsize)
