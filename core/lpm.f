@@ -343,7 +343,7 @@ c----------------------------------------------------------------------
       rdeff_max = rdeff_max*2. ! to get diameter
 
       d2chk(2) = d2chk(2)*rdeff_max
-      d2chk(3) = 1.01    *rdeff_max
+      d2chk(3) = 1.10    *rdeff_max
 
       d2chk(1) = max(d2chk(2),d2chk(3))
 
