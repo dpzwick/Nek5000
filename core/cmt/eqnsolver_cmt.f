@@ -473,22 +473,12 @@ C> @}
       include  'DEALIAS'
       
       integer e,eq_num
-      parameter (ldd=lxd*lyd*lzd)
 
       nxyz=lx1*ly1*lz1
-      if(eq_num.ne.1.and.eq_num.ne.5)then
-
-        if (eq_num.eq.4.and.ldim.eq.2)then
-
-        else
-           call subcol3(res1(1,1,1,e,eq_num),usrf(1,1,1,eq_num)
-     $                  ,bm1(1,1,1,e),nxyz) 
-        endif
-      elseif(eq_num.eq.5)then
-c          call subcol3(res1(1,1,1,e,eq_num),usrf(1,1,1,eq_num)
-c    $                  ,bm1(1,1,1,e),nxyz) 
-
-      endif
+      call subcol3(res1(1,1,1,e,eq_num),
+     >             usrf(1,1,1,eq_num),
+     >             bm1(1,1,1,e),
+     >             nxyz) 
 
       return
       end
@@ -510,18 +500,18 @@ c-----------------------------------------------------------------------
       do k=1,lz1
          do j=1,ly1
             do i=1,lx1
+               ffmass = 0.0
+               ffx = 0.0
+               ffy = 0.0
+               ffz = 0.0
+               ffe = 0.0
                call NEKASGN(i,j,k,e)
                call userf(i,j,k,eg)
-
-               ! note fx,fy,fz multiply by density*phig to be
-               ! consistent with nek5000 units (i.e. ffx,ffy,ffz
-               ! are accelerations!
-               usrf(i,j,k,2) = FFX*u(i,j,k,1,e)
-               usrf(i,j,k,3) = FFY*u(i,j,k,1,e)
-               usrf(i,j,k,4) = FFZ*u(i,j,k,1,e)
-               usrf(i,j,k,5) = 0.0
-c              usrf(i,j,k,5) = (U(i,j,k,2,e)*FFX + U(i,j,k,3,e)*FFY
-c    &                       +  U(i,j,k,4,e)*FFZ)/ U(i,j,k,1,e)
+               usrf(i,j,k,1) = ffmass
+               usrf(i,j,k,2) = FFX
+               usrf(i,j,k,3) = FFY
+               usrf(i,j,k,4) = FFZ
+               usrf(i,j,k,5) = FFE
 ! JH070219 Tait mixture model. no idea what particles are going to look
 ! like in it
 c JB080119 multiple species

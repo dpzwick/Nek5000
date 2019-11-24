@@ -75,8 +75,10 @@ c---------------------------------------------------------------------
       
       real              rho,phi,pres,cv,e_internal
      $                 ,t0in,p0in,asnd,rgas,cp,mu,lambda,molarmass
+     $                 ,ffe,ffmass
       common /nekuscmt/ rho,phi,pres,cv,e_internal
      $                 ,t0in,p0in,asnd,rgas,cp,mu,lambda,molarmass
+     $                 ,ffe,ffmass
 ! let kond=udiff
 
 ! index for gas density in vtrans, Q+-
